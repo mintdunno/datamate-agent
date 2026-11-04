@@ -84,10 +84,11 @@ and function allowlists, a read-only restricted DuckDB worker, memory/time/row/b
 limits. This is defense in depth, not a separately qualified OS sandbox. Successful
 business queries and exact output evidence are required; verification cannot prove
 that every business rule or generated query interpretation is correct.
-An 8,000-byte deterministic initial evidence packet supplies whole small business
-notes, compact relevant schema and source-linked split rules/index. Omissions are
-explicit; use scoped rule lookup for needed sections. This reduces discovery
-requests while retaining the same context, generation and API budgets.
+Automatic context preloading was removed after two bounded smoke qualifications
+failed to improve correctness. The model discovers schemas and reads scoped rules
+through tools. SQL recovery, source-linked evidence and response-finish diagnostics
+remain. The explicit 2,048-output-token NIM experiment profile avoids observed
+1,024-token clipping; it does not change thinking mode or total question budgets.
 
 Request accounting is persisted in `state/nim_accounting.sqlite` by default. Every
 HTTP attempt, including retries, counts. Defaults are 25 RPM, 1,200 requests per UTC

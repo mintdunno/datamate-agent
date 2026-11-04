@@ -145,10 +145,7 @@ async def run_batch(
     allow_large: bool = False,
     expected_sources: dict | None = None,
     normalization_plans: PreparationPlans | None = None,
-    context_packet_bytes: int = 8000,
 ) -> dict:
-    if context_packet_bytes != 0 and not 1000 <= context_packet_bytes <= 16000:
-        raise ValueError("context packet bytes must be zero or 1000..16000")
     if (
         not questions
         or max_questions < 1
@@ -206,7 +203,6 @@ async def run_batch(
         "deadline": deadline,
         "max_questions": max_questions,
         "allow_large": allow_large,
-        "context_packet_bytes": context_packet_bytes,
         "normalization_plans": normalization_plans.model_dump(mode="json")
         if normalization_plans
         else {},
@@ -351,7 +347,6 @@ async def run_batch(
                     model_settings=settings,
                     total_token_budget=getattr(profile, "question_token_budget", 24000),
                     tool_call_limit=getattr(profile, "tool_call_limit", 16),
-                    context_packet_bytes=context_packet_bytes,
                 )
                 answer = parse_submission(result.answer)
                 if answer.id != question.id:

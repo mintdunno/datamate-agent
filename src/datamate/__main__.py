@@ -96,7 +96,6 @@ def _run(args):
                 allow_large=args.allow_full_evaluation,
                 expected_sources=snapshot.sources if snapshot else None,
                 normalization_plans=plans,
-                context_packet_bytes=args.context_packet_bytes,
             )
 
     with GPUMonitor(enabled=is_local_backend(profile)) as monitor:
@@ -264,7 +263,6 @@ def main(argv=None):
     run.add_argument("--daily-budget", type=int, default=1200)
     run.add_argument("--request-budget", type=int, default=300)
     run.add_argument("--question-requests", type=int, default=8)
-    run.add_argument("--context-packet-bytes", type=int, default=8000)
     run.add_argument("--max-questions", type=int, default=100)
     run.add_argument("--deadline", type=float, default=120)
     run.add_argument("--timeout", type=float, default=90)

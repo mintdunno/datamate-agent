@@ -39,7 +39,7 @@ def test_mock_agent_executes_sql_and_returns_valid_answer(tmp_path):
     assert result.error_code is None
 
 
-def test_delivered_initial_rules_satisfy_source_gate_and_queries_are_traced(tmp_path):
+def test_explicit_rule_reads_satisfy_source_gate_and_queries_are_traced(tmp_path):
     path = tmp_path / "db.duckdb"
     with duckdb.connect(str(path)) as db:
         db.execute("CREATE TABLE sales(amount INTEGER)")
@@ -80,7 +80,11 @@ def test_delivered_initial_rules_satisfy_source_gate_and_queries_are_traced(tmp_
     def respond(messages, info):
         calls.append(1)
         if len(calls) == 1:
-            assert "All records are valid" in str(messages)
+            assert "All records are valid" not in str(messages)
+            return ModelResponse(parts=[ToolCallPart("get_rules", {"scope": "business"})])
+        if len(calls) == 2:
+            return ModelResponse(parts=[ToolCallPart("get_rules", {"scope": "split"})])
+        if len(calls) == 3:
             return ModelResponse(
                 parts=[ToolCallPart("execute_sql", {"sql": "SELECT sum(amount) FROM sales"})]
             )
@@ -95,8 +99,8 @@ def test_delivered_initial_rules_satisfy_source_gate_and_queries_are_traced(tmp_
     )
     assert result.answer["answer"] == 5
     assert {"0", "1"} <= set(result.evidence_ids)
-    assert result.tool_events[0]["sql"] == "SELECT sum(amount) FROM sales"
-    assert result.tool_events[0]["timestamp"].tzinfo is not None
+    assert result.tool_events[2]["sql"] == "SELECT sum(amount) FROM sales"
+    assert result.tool_events[2]["timestamp"].tzinfo is not None
 
 
 @pytest.mark.parametrize("sql,value", [("SELECT 1", 999), ("SELECT sum(amount) FROM sales", 999)])

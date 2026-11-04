@@ -14,7 +14,6 @@ from pydantic_ai.usage import RunUsage, UsageLimits
 
 from datamate.contracts.answers import SubmissionAnswer, parse_submission
 from datamate.contracts.inputs import Question
-from datamate.runtime.context import build_context
 from datamate.runtime.diagnostics import failure_code, safe_tool_feedback
 from datamate.runtime.outputs import output_functions
 from datamate.runtime.semantics import TRAIN_RULEBOOK_SHA256, Period, period_bounds
@@ -38,9 +37,8 @@ Use search_schema to find columns, describe_table for physical IDs, inspect_valu
 Use SQL aliases for meaningful outputs; scalar final values must appear exactly in query results.
 For rankings sort the requested metric descending, then code ascending; count all valid candidates.
 Return abstain if applicable rules or evidence cannot be read completely within the resource budget.
-Initial evidence is already supplied: use its physical IDs and complete delivered rule sections.
-Fetch omitted rules with get_rules(scope="business" or "split", query=section title).
-Do not repeat schema/rule discovery already supplied. Parameterize SQL filter values when useful.
+Fetch applicable rules with get_rules(scope="business" or "split", query=section title).
+Parameterize SQL filter values when useful.
 """
 
 
@@ -114,7 +112,6 @@ async def solve_question(
     model_settings: dict | None = None,
     total_token_budget: int = 24000,
     tool_call_limit: int = 16,
-    context_packet_bytes: int = 8000,
 ) -> SolveResult:
     started = time.monotonic()
     agent = Agent(
@@ -126,13 +123,6 @@ async def solve_question(
     )
     tool_events = []
     payload = question.model_dump(mode="json", include={"question", "as_of_date"})
-    if context_packet_bytes:
-        packet, delivered = build_context(
-            tools.catalog, question.question, byte_limit=context_packet_bytes
-        )
-        payload["evidence"] = packet
-        tools.rule_ids_read.update(delivered)
-        tools.rules_read.update(rule["source"] for rule in packet["rules"])
 
     def recoverable(function):
         @wraps(function)

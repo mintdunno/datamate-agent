@@ -97,3 +97,25 @@ def test_worker_deadline_and_oversized_column_metadata(tmp_path):
 )
 def test_safe_date_functions_use_sqlglot_canonical_names(expression):
     validate_sql("SELECT " + expression, set())
+
+
+def test_scope_selection_delivers_business_rules_without_paging_split(tmp_path):
+    import duckdb
+
+    from datamate.runtime.tools import StructuredTools
+
+    path = tmp_path / "db.duckdb"
+    with duckdb.connect(str(path)) as db:
+        db.execute("CREATE TABLE products(n INTEGER)")
+    source = {
+        "tables": [{"table_id": "products", "columns": []}],
+        "rules": [
+            {"rule_id": "general", "source": "rulebook.md", "text": "Split rules."},
+            {"rule_id": "business", "source": "data/shop/README.md", "text": "Business rules."},
+        ],
+    }
+    tools = StructuredTools(path, source)
+    result = tools.get_rules(scope="business")
+    assert [entry["rule_id"] for entry in result["entries"]] == ["business"]
+    assert tools.rule_ids_read == {"business"}
+    assert all(entry["source"] != "rulebook.md" for entry in result["entries"])
