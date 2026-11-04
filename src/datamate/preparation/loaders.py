@@ -3,6 +3,7 @@
 import csv
 import sqlite3
 from collections.abc import Iterator
+from contextlib import closing
 from itertools import chain, islice
 from pathlib import Path
 
@@ -68,58 +69,72 @@ def _excel_tables(path: Path) -> Iterator[SourceTable]:
                 sheet.reset_dimensions()
                 cached.reset_dimensions()
 
-                def converted(sheet=sheet, cached=cached) -> Iterator[SourceRow]:
-                    for number, (raw_row, value_row) in enumerate(
-                        zip(sheet.iter_rows(), cached.iter_rows(), strict=True), 1
+                # Declared worksheet dimensions are unreliable. Scan actual row widths first,
+                # so late cells and formatting survive even when the header is narrower.
+                with closing(sheet.iter_rows()) as scan:
+                    width = max((len(row) for row in scan), default=0)
+
+                def converted(sheet=sheet, cached=cached, width=width) -> Iterator[SourceRow]:
+                    with (
+                        closing(sheet.iter_rows(max_col=width)) as raw_rows,
+                        closing(cached.iter_rows(max_col=width)) as value_rows,
                     ):
-                        yield SourceRow(
-                            number,
-                            tuple(v.value for v in value_row),
-                            tuple(c.value if c.data_type == "f" else None for c in raw_row),
-                            tuple(c.number_format for c in raw_row),
-                        )
+                        for number, (raw_row, value_row) in enumerate(
+                            zip(raw_rows, value_rows, strict=True), 1
+                        ):
+                            yield SourceRow(
+                                number,
+                                tuple(v.value for v in value_row),
+                                tuple(c.value if c.data_type == "f" else None for c in raw_row),
+                                tuple(c.number_format for c in raw_row),
+                            )
 
                 iterator = converted()
-                initial = list(islice(iterator, 20))
+                try:
+                    initial = list(islice(iterator, 20))
 
-                def strings(row: SourceRow) -> list[str]:
-                    return [v for v in row.values if isinstance(v, str) and v.strip()]
+                    def strings(row: SourceRow) -> list[str]:
+                        return [v for v in row.values if isinstance(v, str) and v.strip()]
 
-                candidates = [
-                    i
-                    for i, row in enumerate(initial)
-                    if len(strings(row)) >= 2
-                    and all(v is None or isinstance(v, str) for v in row.values)
-                ]
-                if not candidates:
                     candidates = [
                         i
                         for i, row in enumerate(initial)
-                        if len(strings(row)) == 1
+                        if len(strings(row)) >= 2
                         and all(v is None or isinstance(v, str) for v in row.values)
                     ]
-                if not candidates:
-                    raise ValueError(f"Unable to detect header in sheet {sheet.title!r}")
-                index = candidates[0]
-                header = initial[index]
+                    if not candidates:
+                        candidates = [
+                            i
+                            for i, row in enumerate(initial)
+                            if len(strings(row)) == 1
+                            and all(v is None or isinstance(v, str) for v in row.values)
+                        ]
+                    if not candidates:
+                        raise ValueError(f"Unable to detect header in sheet {sheet.title!r}")
+                    # Inference is heuristic: equal-width candidates retain the earliest row.
+                    index = max(candidates, key=lambda i: len(strings(initial[i])))
+                    header = initial[index]
 
-                def padded(rows, width):
-                    for row in rows:
-                        missing = max(0, width - len(row.values))
-                        yield SourceRow(
-                            row.number,
-                            row.values + (None,) * missing,
-                            row.formulas + (None,) * missing,
-                            row.formats + (None,) * missing,
-                        )
+                    def padded(rows, width):
+                        for row in rows:
+                            missing = max(0, width - len(row.values))
+                            yield SourceRow(
+                                row.number,
+                                row.values + (None,) * missing,
+                                row.formulas + (None,) * missing,
+                                row.formats + (None,) * missing,
+                            )
 
-                yield SourceTable(
-                    sheet.title,
-                    header.values,
-                    header.number,
-                    padded(chain(initial[index + 1 :], iterator), len(header.values)),
-                    tuple(initial[:index]),
-                )
+                    yield SourceTable(
+                        sheet.title,
+                        header.values,
+                        header.number,
+                        padded(chain(initial[index + 1 :], iterator), len(header.values)),
+                        tuple(initial[:index]),
+                    )
+                finally:
+                    iterator.close()
+
         finally:
             values.close()
     finally:

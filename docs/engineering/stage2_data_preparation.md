@@ -23,6 +23,11 @@ Unsupported business files and linked paths fail clearly rather than being follo
   Formulas/macros/external links are never executed. Missing formula caches are
   explicit unresolved events; they cannot be forward-filled as blank cells.
 - Excel headers: deterministic heuristic in the first 20 rows, title/preamble retained.
+  Select the all-text candidate with the most nonblank labels; keep the earliest tie.
+  Scan actual worksheet width before streaming ingestion, so short/blank rows and
+  late columns retain their positions. Explicitly close row/workbook iterators on
+  failure, including Windows file handles. This fixes metadata rows preceding a
+  wider header; a data row richer in text than the true header remains ambiguous.
   Header selection is marked inferred. Numeric-only/undetectable headers fail clearly;
   arbitrary spreadsheet layouts still require additional evidenced parsing support.
 - SQLite: immutable read-only connection, query_only, trusted_schema off, extensions

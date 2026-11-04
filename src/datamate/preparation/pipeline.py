@@ -6,6 +6,7 @@ import os
 import shutil
 import sys
 import tempfile
+from contextlib import closing
 from dataclasses import dataclass
 from importlib.metadata import version
 from itertools import islice
@@ -218,18 +219,22 @@ def _build_database(path: Path, inputs: BusinessInputs, plans: dict[str, TablePl
         tables = []
         used_plans = set()
         for source in inputs.sources:
-            for table in load_tables(source.path):
-                key = f"{source.relative_path}::{table.name}"
-                if key in plans:
-                    used_plans.add(key)
-                tables.append(_ingest_table(db, source, table, plans.get(key, TablePlan())))
+            with closing(load_tables(source.path)) as source_tables:
+                for table in source_tables:
+                    key = f"{source.relative_path}::{table.name}"
+                    if key in plans:
+                        used_plans.add(key)
+                    with closing(table.rows):
+                        tables.append(_ingest_table(db, source, table, plans.get(key, TablePlan())))
         if used_plans != set(plans):
             raise ValueError("normalization plan references an unknown source table")
         calendar_source = next(
             item for item in inputs.documents if item.relative_path == "calendar.csv"
         )
-        calendars = load_tables(calendar_source.path)
-        calendar = _ingest_table(db, calendar_source, next(calendars), TablePlan(), calendar=True)
+        with closing(load_tables(calendar_source.path)) as calendars:
+            table = next(calendars)
+            with closing(table.rows):
+                calendar = _ingest_table(db, calendar_source, table, TablePlan(), calendar=True)
         db.execute("COMMIT")
         return {
             "split_id": inputs.split_id,
