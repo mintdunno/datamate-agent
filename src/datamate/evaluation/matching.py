@@ -76,6 +76,11 @@ def _list(actual: list, expected: list, aliases: list) -> Match:
     return _combine([_cell(a, e) for a, e in zip(actual, expected, strict=True)])
 
 
+def _row_key(row: list[JsonValue]) -> tuple:
+    """Normalize scalar cells, while nested JSON keeps exact structural semantics."""
+    return tuple(_key(cell) for cell in row)
+
+
 def _table(actual: dict, expected: dict, aliases: list) -> Match:
     columns, expected_columns = actual["columns"], expected["columns"]
     rows, expected_rows = actual["rows"], expected["rows"]
@@ -99,7 +104,7 @@ def _table(actual: dict, expected: dict, aliases: list) -> Match:
         expected_identities
     ):
         return None, "ambiguous_table_entities"
-    if Counter(_key(row) for row in aligned) == Counter(_key(row) for row in expected_rows):
+    if Counter(_row_key(row) for row in aligned) == Counter(_row_key(row) for row in expected_rows):
         return True, "value_match"
     if aliases:
         return None, "table_alias_mapping_unspecified"

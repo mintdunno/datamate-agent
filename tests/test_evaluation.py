@@ -142,6 +142,19 @@ def test_observed_table_aliases_do_not_create_global_cross_row_matches():
     assert result.outcome is None
 
 
+def test_table_scalar_normalization_does_not_depend_on_alias_mapping():
+    result = evaluate_prediction(
+        reference("table", {"columns": ["name", "n"], "rows": [["A", 1]]}, [["ITEM-A"]]),
+        {
+            "id": "q-demo",
+            "type": "table",
+            "answer": {"columns": ["name", "n"], "rows": [["a!", 1]]},
+        },
+        spec(),
+    )
+    assert result.outcome == "correct"
+
+
 def test_train_matching_requires_explicit_split_binding():
     with pytest.raises(ValidationError):
         EvaluationSpec(split_id="private", profile="train_rulebook_v1", rulebook_sha256="a" * 64)
