@@ -117,6 +117,9 @@ class RequestBudget:
                 "FROM usage WHERE run_id = ?",
                 (self.run_id,),
             ).fetchone()
+            usage_responses = db.execute(
+                "SELECT COUNT(*) FROM usage WHERE run_id=?", (self.run_id,)
+            ).fetchone()[0]
         return {
             "day_attempts": day_attempts,
             "run_attempts": run_attempts,
@@ -124,6 +127,10 @@ class RequestBudget:
             "day_output_tokens": day_usage[1],
             "run_input_tokens": run_usage[0],
             "run_output_tokens": run_usage[1],
+            "run_usage_responses": usage_responses,
+            "token_usage_status": "reported_complete"
+            if usage_responses == run_attempts
+            else "partial_or_unavailable",
         }
 
 
@@ -170,7 +177,10 @@ class BudgetTransport(httpx.AsyncBaseTransport):
                     self.budget.record_usage(*tokens)
             except (ValueError, AttributeError, TypeError):
                 pass
-            if response.status_code not in (429, 502, 503, 504) or attempt == self.max_retries:
+            if (
+                response.status_code not in (408, 429, 500, 502, 503, 504)
+                or attempt == self.max_retries
+            ):
                 return response
             delay = _retry_after(response.headers.get("Retry-After"))
             if delay is None:
