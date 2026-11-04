@@ -1,8 +1,9 @@
 # New Milestone 1 — Evidence-Guided Adaptive Normalization
 
-Status: APPROVED by the user ("ok duyệt"), 2026-11-04.
-This is the approved design and execution roadmap. The file-by-file implementation
-plan is a separate artifact. No product code has been changed by this document.
+Status: APPROVED design ("ok duyệt"), revised for the user-approved simplification
+("ok chốt ... sửa lại plan"), 2026-11-04. Revision 2.
+This is the design and acceptance roadmap; its file-by-file implementation plan is
+a separate artifact. This revision changes documentation only.
 
 ## 1. Intent and accepted decisions
 
@@ -18,16 +19,17 @@ scoped quarantine; versioned query-time measures; common inference profiles and
 offline-capable execution; atomic Conventional Commits. No embedding, reranker,
 vector database or multi-agent solving runtime. Development reviewers are separate.
 
-Planner decisions proposed for approval: exact reference quotas/checkpoint assignment,
-campaign budget, module boundaries and Linux-only initial generated-code qualification.
-These were not separately promised by the user. Changes after freezing need a new
-version and comparability statement.
+Accepted planning decisions: reference quotas/checkpoint assignment, campaign budget
+and incremental module boundaries. Revision 2 makes typed operator proposals mandatory
+(Level 1), with generated Python conditional (Level 2). Changes after freezing need a
+new version and comparability statement; simplification does not relax data-quality gates.
 
 Non-goals: rewrite QA; tune from QA answers; label every real record; create a full
 teacher-generated golden DB; guarantee arbitrary future semantics without extensions;
 download large models; start paid cloud jobs; clean/delete old state; merge, push or
-rewrite history. Native development does not require Docker. Generated-code execution
-has a separately qualified backend; absence makes that requirement PARTIAL.
+rewrite history. Native development and Level 1 do not require Docker. Level 2 is
+DISABLED by default. If enabled or required to meet a mandatory capability, its
+isolation qualification becomes mandatory; an unmet capability still means PARTIAL.
 
 ## 2. Source authority and required specification corrections
 
@@ -123,6 +125,13 @@ compile clauses and bind roles/grain/relationships -> evidence-bound plan -> exe
 candidate transformations -> independent audit/recovery -> qualified publication.
 Read rules early; bind physical fields only after schemas/profiles are available.
 Raw ingestion remains usable with no SLM. No row-per-model loop.
+
+Implement this flow with focused functions and typed records. Pydantic validates
+trust/serialization boundaries; frozen dataclasses or typed structures serve internal
+steps, with DuckDB constraints plus independent audit for stored facts. Avoid repeated
+DTO/JSON roundtrips, generic proof plugins and campaign orchestration frameworks.
+RawRecord, CandidateFact, RawDisposition, Lineage, AuditFinding and Qualification
+retain their separate invariants. Type-count reduction is not an acceptance metric.
 
 | Contract | Required content / invariant |
 | --- | --- |
@@ -245,9 +254,23 @@ checks; no in-place reinterpretation or deletion. Failed builds do not appear co
 
 Reuse ModelProfile, OpenAI-compatible client, PydanticAI outputs and persistent ledger.
 Candidate gets bounded profiles, patterns/counterexamples and source clauses, not
-reference labels. Escalate registered configuration -> structured plan -> isolated
-micro-transformation only when necessary. The model proposes; trusted code executes
-transactionally and independently audits affected/dependent scopes before acceptance.
+reference labels. Level 1 proposes registered operations with typed parameters,
+evidence and input scopes; trusted code executes transactionally and independently
+audits affected/dependent scopes before acceptance. Executable Python, arbitrary SQL
+and equivalent executable-expression escape hatches are forbidden at Level 1.
+Level 2 requires the evidence and isolation gate in section 10, with no automatic
+capability/model/backend/mode fallback.
+
+Reuse the existing SQLite request ledger for campaign/phase accounting and checkpoint
+single-use state; no second accounting ledger, scheduler, event bus or experiment
+registry. Use one strict evaluator-owned manifest schema for immutable frozen-spec
+and result records, linked by digest. Frozen inputs are persisted before execution;
+measurements/results are written once afterward in a new record. Never overwrite the
+frozen specification or add reference metadata to solver-visible RunMetadata.
+CandidateFreeze is an internal manifest-path/hash value; CheckpointReservation is an
+internal transaction receipt. SQLite transactions/unique constraints are authoritative.
+Checkpoint consumption binds pilot/source/checkpoint selection, not candidate/run ID;
+changed reference versions invalidate comparisons and cannot rearm an exposed checkpoint.
 
 Initial qualification campaign:120 actual NIM HTTP attempts TOTAL, divided into
 smoke<=20, development baseline/recovery<=60, frozen verification/checkpoint<=40.
@@ -284,9 +307,33 @@ during inference toward the official aggregate parameter cap, even sequentially.
 Evaluation-only teacher is outside the final pipeline. No model downloads/paid jobs
 are authorized by this design.
 
-## 10. Generated-code sandbox and portability
+## 10. Capability gate, generated-code sandbox and portability
 
-Proposed first backend: qualified Linux OCI/Docker with pinned image, non-root user,
+Level 1 is mandatory. After deterministic publication support is implemented, emit a
+source-only readiness diagnostic on biz_124/biz_106/biz_120/biz_122 before investing in
+Level 2. Report complete raw/disposition denominators, accepted/unresolved/conflicting
+bindings, parse ambiguities, READY/PARTIAL/BLOCKED scopes, audit failure categories,
+unsupported operation families and measured memory/time/disk with explicit units.
+Use existing build/profile/audit evidence; do not add a full-data pass solely for the
+summary, read QA/checkpoint labels, consume the checkpoint or upgrade qualification.
+Missing measurements/counts remain unknown. This is not a frozen baseline or accuracy
+claim; actual baseline/final evaluation retains the frozen-reference/campaign rules.
+
+Level 2 is conditional and DISABLED by default. Enable it only for a documented
+development issue family with sufficient semantic evidence, meaningful affected
+records/required scopes, and a concrete explanation why a reusable reviewed operator
+is not a reasonable solution. Evidence absence/ambiguity is not a code-generation
+capability gap. The decision uses development diagnostics/results only, is recorded
+before final freeze, and stays within the same 120-attempt/two-improvement-round caps.
+Do not build the OCI backend or its full DTOs merely because Task 21 exists.
+
+Capability states are DISABLED / UNQUALIFIED / QUALIFIED, separate from data audit and
+qualification statuses. Level 1 may satisfy this milestone with Level 2 DISABLED only
+if all mandatory normalization/reference/audit/runtime gates pass. An unmet required
+capability remains PARTIAL regardless of the flag. Once Level 2 is enabled or needed,
+an unavailable/unqualified backend prevents PASS; never silently disable it to pass.
+
+When activated, the first backend is qualified Linux OCI/Docker with pinned image, non-root user,
 network disabled, read-only root, no-new-privileges, dropped capabilities, restricted
 seccomp, process/CPU/memory/swap limits, bounded tmpfs and no host dataset/reference/
 secret/socket mounts or privileged mode. Supply only a bounded serialized batch and
@@ -302,8 +349,10 @@ are defense in depth, not isolation. Proposed defaults:1CPU,512MiB RAM/swap ceil
 Actually test file/network denial, resource enforcement and process-tree termination;
 flags alone do not prove security. Current Windows host has no qualified daemon.
 Native generated Python stays disabled; deterministic/structured plans work natively.
-WSL/Linux/Colab/Kaggle qualification is separate. If mandatory generated-code execution
-cannot be qualified, preserve completed safe scopes and report whole milestone PARTIAL.
+WSL/Linux/Colab/Kaggle qualification is separate. Missing OCI alone does not make a
+fully qualified Level 1 run PARTIAL when Level 2 is DISABLED. Enabled/required Level 2
+without actual isolation qualification makes the milestone PARTIAL. Skipped tests
+never qualify Level 2; preserve completed safe scopes and report the precise gap.
 
 CPU pilot defaults proposed: sequential businesses, batch1000, DuckDB2GiB, process-tree
 RSS watchdog8GiB, configurable45min/business timeout, generated-output/spill cap10GiB.
@@ -350,6 +399,13 @@ language claims not supported by such a check or documented independent developm
 adjudication stay PROVISIONAL/UNRESOLVED. No mandatory human loop is introduced at
 inference, and unmet reference minima remain PARTIAL rather than fabricated gold.
 
+Use Select -> Verify -> Freeze functions in evaluation/normalization.py and concrete
+verifiers for these evidence kinds, not an extensible proof/plugin architecture.
+Keep proposal, verification outcome and adjudicated-reference invariants distinct;
+unknown proof kinds stay UNRESOLVED and model-supplied authoritative verification
+fields are rejected. Inline a redundant evidence envelope only when it carries no
+separate invariant; evaluator reference data must never share a solver packet schema.
+
 References/adjudication live under evaluator-only state/suites/normalization-v1,
 not prepared artifacts/prompts. Commit synthetic fixtures/generators and selection
 configuration only, not private real rows/expected labels. Freeze source/selector/
@@ -388,8 +444,8 @@ unavailable P1 profiles while still preventing result-driven selection.
 
 ## 12. Roadmap, deliverables and commit boundaries
 
-This is acceptance/dependency design. A detailed file-by-file TDD implementation
-plan follows only after user approval of this document.
+This is the acceptance/dependency design. The paired 24-task TDD plan implements
+this revision; its source authority and gates must remain synchronized here.
 
 | Phase | Deliverable | Acceptance gate | Logical commits |
 | --- | --- | --- | --- |
@@ -397,14 +453,17 @@ plan follows only after user approval of this document.
 | P1 | Separate raw staging and full CPU profiles; layout/merged metadata and bounded representative evidence | No raw loss; stable identity/source hashes; chunk/layout/format fidelity; zero model calls | refactor: stage/profile separation; feat: source metadata/profiles |
 | P2 | Versioned clauses, roles/grain/keys/status/units/capabilities and bounded BM25/fuzzy retrieval | Every clause mapped/unresolved; ambiguity/collision rejection; explicit precedence/dependencies and cache identity | feat: semantic registry; feat: binding validation |
 | P3 | Existing/new deterministic ops, Pandas boundary, grain-aware canonical facts and1:N lineage | Synthetic positive/negative gates; dtype losslessness; repeated order amounts not multiplied; full source accounting | feat: operations/batch contracts; feat: projections/lineage |
-| P4 | Independent audits, dependency quarantine, versioned atomic publication | No false READY, hidden partial totals or unsupported N/A; absent source differs from processing uncertainty; rollback/invalidation tests | feat: intrinsic audit; refactor: qualified publication/cache |
-| P5 | Budgeted model plans, campaign guard, bounded recovery and isolated micro-code | Live accept/reject evidence on>=3 operation families; resource/offline/budget tests; actual required sandbox qualification | feat: adaptive plans; feat: isolated transform backend |
+| P4 | Independent audits, dependency quarantine, versioned atomic publication and source-only development diagnostic | No false READY, hidden partial totals or unsupported N/A; absent source differs from processing uncertainty; rollback/invalidation and label-free diagnostic tests | feat: intrinsic audit; refactor: qualified publication/cache |
+| P5 | Mandatory Level 1 typed plans, campaign guard and bounded recovery; conditional Level 2 | Live accept/reject evidence on>=3 registered operation families; resource/offline/budget tests; actual isolation qualification if Level 2 is enabled/required | feat: adaptive plans; conditional feat: isolated transform backend |
 | P6 | Blinded references, baseline/final qualification, one checkpoint and minimal QA artifact adapter | Reference minima and fixed regression cases pass; full five-business audit; no label leakage; budgets and environment statuses honest | test: normalization evaluation; feat: artifact adapter; docs: evidence |
 
 Start reference schema/selection in P0 and adjudicate independently alongside P1–P4,
 before learner baseline results. P6 does not create truth after seeing predictions.
-Unavailable P5 environment does not stop safe deterministic work, but required
-generated-code qualification remains incomplete.
+The development diagnostic precedes adaptive complexity; Level 1 smoke/baseline
+evidence precedes any justified Level 2 implementation. Task 21 retains its slot as a
+conditional decision/backend unit, before final freeze/checkpoint when activated.
+Unavailable Level 2 does not stop safe native work; report DISABLED or the unmet
+enabled/required qualification honestly rather than inventing a mandatory OCI dependency.
 
 Touch map: current preparation/models.py, loaders.py, profiling.py, catalog.py,
 normalization.py, pipeline.py; add focused operations.py/audit.py/adaptive.py only
@@ -436,9 +495,12 @@ or automatically enlarge API/resource/architecture budgets.
 
 PASS requires mandatory N/M/Q-contract coverage, deterministic gates, verified pilot
 references/full audit with useful successful transformations, live bounded SLM evidence,
-actual required isolation qualification, reproducibility and minimum query compatibility.
+reproducibility and minimum query compatibility. Level 1 typed proposals are required.
+Level 2 isolation qualification is required only when that capability is enabled or
+needed to meet a mandatory gate; DISABLED Level 2 alone does not prevent PASS.
 No arbitrary QA score or population normalization percentage is required.
-PARTIAL means missing required reference/semantic/local/offline/sandbox evidence.
+PARTIAL means missing required reference/semantic/local/offline evidence, an unmet
+mandatory capability, or missing enabled/required Level 2 isolation evidence.
 A component can be BLOCKED by an unavailable external runtime; finish other meaningful
 work and report its exact gap. Unknown cleaning is not data absence/unanswerable.
 
@@ -459,13 +521,15 @@ versioned artifacts and test replay/idempotence/rollback.
 Builder chooses tested dependency versions, indexes, temporary paths and batching/test
 internals. Builder cannot relax source authority, evidence, destructive-transform gates,
 campaign limits, checkpoint isolation, model identity or confinement without a reviewed
-change. Native-safe core plus separately qualified Linux micro-code, pilot quotas and
-120attempt cap are explicit planner proposals for user approval.
+change. The user-approved revision makes Level 1 mandatory and Level 2 conditional;
+the pilot, reference/synthetic minima, request caps and all correctness/safety gates
+remain binding. Re-enabling Level 2 requires documented development evidence and the
+complete qualification contract, not a relaxed native execution path.
 
-After design approval, invoke superpowers:writing-plans to prepare the executable
-TDD plan. This draft is intended for a local Conventional documentation commit;
-committing a draft does not imply the user approved it. No product implementation,
-model benchmark or dependency installation occurred during this planning task.
+Use superpowers:writing-plans for the executable TDD plan and keep its gates consistent
+with this revision. The user approved the simplification direction and requested its
+documentation update; this is not evidence that implementation or qualification ran.
+No product implementation, model benchmark or dependency installation occurred here.
 
 ## 15. Sources and evidence
 
@@ -493,6 +557,11 @@ User-supplied documents at design time (preserved without modification):
 - NORMALIZATION_SPEC.md SHA256 c5b6a1712ab5ad693fcfad7e65f33148d189d4cfc48f54a476f25665ec7c0aac
 - ERROR_CATALOG.md SHA256 afc81cfee4925f0c663ea48ec2f4e1c3cb4e166b817c486bf3438244dce7fea4
 
-The user selected the approach/evaluation method and subsequently approved this
-written design with "ok duyệt". P0 will reconcile normative changes explicitly
-instead of silently editing these input sources during planning.
+The user selected the approach/evaluation method and approved the original design
+with "ok duyệt". After the architecture-simplification discussion, the user approved
+the direction and requested the plan update ("ok chốt ... sửa lại plan"). Revision 2
+records that scope change: concrete reference verifiers, direct runners/one ledger,
+boundary-focused types, a development diagnostic and conditional Level 2. P0 will
+reconcile normative source-document changes explicitly; these input sources remain
+untouched during planning. Main performs the revision's own plan/spec self-review;
+earlier reviewer results above apply to the original design, not a new review claim.

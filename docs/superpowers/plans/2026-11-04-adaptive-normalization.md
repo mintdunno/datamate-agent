@@ -4,14 +4,15 @@
 
 **Goal:** Refactor preparation into an evidence-bound, independently audited normalization pipeline and qualify a fixed five-business train pilot without a teacher-generated global gold database.
 
-**Architecture:** Reuse existing I/O, immutable source snapshots, raw tagging, operation utilities, atomic publication and common inference accounting. Separate staging, full CPU profiling, source compilation/binding, typed transformations/projections and independent qualification; expose only qualified factual scopes through the existing artifact interface. Reference/evaluation code stays outside preparation.
+**Architecture:** Reuse existing I/O, immutable source snapshots, raw tagging, operations, atomic publication and common inference accounting. Keep one preparation flow with concrete functions, typed operator proposals and independent qualification; expose only qualified factual scopes. Evaluator-owned references and direct runners reuse one SQLite ledger and immutable manifests; generated Python is conditional.
 
-**Tech Stack:** Python 3.13, uv, Pydantic, DuckDB, openpyxl, current CSV/SQLite readers and Polars profiling; bounded Pandas batches, rank_bm25, RapidFuzz and psutil as justified locked additions; PydanticAI/common OpenAI-compatible inference; optional qualified Linux OCI micro-transform backend; pytest/Ruff.
+**Tech Stack:** Python 3.13, uv, Pydantic, DuckDB, openpyxl, current CSV/SQLite readers and Polars profiling; bounded Pandas batches, rank_bm25, RapidFuzz and psutil as justified locked additions; PydanticAI/common OpenAI-compatible inference; pytest/Ruff. Linux OCI is required only for activated Level 2 generated Python.
 
-**Spec:** docs/superpowers/specs/2026-11-04-adaptive-normalization-design.md, approved by the user on 2026-11-04. Read that document together with this plan. The source authority is the active split's rulebook/README/calendar and official competition rules; the uncorrected v3 examples do not override them.
+**Spec:** docs/superpowers/specs/2026-11-04-adaptive-normalization-design.md, revision 2, updated for the user's approved simplification on 2026-11-04. Read both documents. Source authority remains the active split's rulebook/README/calendar and official competition rules; uncorrected v3 examples do not override them.
 
-**Status:** Main self-review complete; implementation has not started. Ready for the
-user's plan review using the previously supplied execution method.
+**Status:** Revision 2 implements the approved simplification direction; product
+implementation has not started. The 24-task structure and existing execution method
+are retained. The revision record below distinguishes spec changes from implementation choices.
 
 ## Global Constraints
 
@@ -21,10 +22,12 @@ user's plan review using the previously supplied execution method.
 - Fixed pilot: Excel biz_124,biz_106,biz_120,biz_122 for development; SQLite biz_123 for one locked checkpoint. Full-data processing is limited to those five; no full QA evaluation is authorized.
 - Initial reference target:20 cases/business=100;>=10 VERIFIED DETERMINATE/business. Synthetic minimum 88: positive and counterexample for each of 44 corrected cases, with N/M/Q ownership.
 - References have separate evidence_status and expected_behavior axes. Model agreement/confidence is not verification; an all-abstain system cannot pass determinate-case gates.
+- Level 1 is mandatory: reviewed registered operations with typed parameters, evidence and scopes. No arbitrary Python/SQL or executable-expression escape hatch through plan parameters.
 - Batch1000; default one business at a time. Proposed safety ceilings from the approved design: DuckDB2GiB, process-tree RSS8GiB,45min/business, generated-output/spill10GiB. Record actual enforcement and measurements.
 - NIM campaign 120 TOTAL actual HTTP attempts, smoke20/development60/final40, shared25RPM/1200UTC-day and300/run outer guard; no automatic increases or new-ledger bypass.
 - Per issue<=2 proposal rounds,<=2 logical requests/round,<=1 transport retry/request,<=8HTTP attempts/issue, concurrency1. Context32768, request-input24000bytes, output2048tokens; preserve omission/token-completeness reporting.
-- Generated Python only on a qualified Linux OCI backend. Defaults:1CPU,512MiB memory/swap ceiling,32PIDs,10s,64MiB tmpfs; explicitly qualified Pandas group/table mode may use1GiB. Native Windows arbitrary exec is disabled.
+- Level 2 generated Python is DISABLED by default and conditional on documented development capability gaps. Its states are DISABLED/UNQUALIFIED/QUALIFIED. If enabled or required to meet a mandatory gate, qualified Linux OCI is mandatory:1CPU,512MiB memory/swap ceiling,32PIDs,10s,64MiB tmpfs; a qualified Pandas group/table mode may use1GiB. Native Windows arbitrary exec is disabled. An unmet mandatory capability remains PARTIAL even with Level 2 disabled.
+- Use concrete verifier functions, direct runners and the existing SQLite ledger. No generic proof plugins, campaign scheduler, event bus, second accounting ledger or unnecessary DTO/serialization layers.
 - No implicit model/backend/thinking/quantization fallback, large model downloads, paid jobs, merge/push/history rewrite or cleanup of old state.
 - Every logical code unit: red test -> minimal implementation -> focused regressions -> Ruff -> relevant full/integration checks -> staged diff/secret review -> atomic Conventional Commit. A test file's existence alone is not coverage.
 
@@ -34,7 +37,7 @@ user's plan review using the previously supplied execution method.
 2. Parsing amounts and their totals with the same wrong scale can make arithmetic pass; Tasks 9/16/4 use independent declared-scale and ambiguity counterexamples.
 3. Repeated invoice amounts,1:N extraction and overlapping files must conserve source dispositions while producing the correct fact grain; Tasks 2/14 test lineage and cardinality independently.
 4. Quarantining a boundary-date or amount row must not shrink declared coverage or produce an apparently complete surviving-row total; Tasks 16/17/22 test dependency blocking and safe projections.
-5. Restarted runs, changed references or missing OCI enforcement must not replenish budgets, unlock a checkpoint or count skipped isolation tests as PASS; Tasks 18/21/24 pin these behaviors.
+5. Restarted runs/reference revisions must not replenish budgets or rearm checkpoints; missing OCI enforcement cannot qualify Level 2, and disabling it cannot hide an unmet mandatory capability. Tasks 18/19/20/21/24 pin these behaviors.
 
 ## File structure and ownership
 
@@ -51,10 +54,10 @@ Keep current package directories. Proposed new files have separate responsibilit
 | src/datamate/preparation/projection.py | Canonical factual projections and trusted flat SQL views |
 | src/datamate/preparation/audit.py | Independent applicability-aware checks and dependency qualification |
 | src/datamate/preparation/adaptive.py | Proposal-only model integration, typed recovery and transactional acceptance |
-| src/datamate/preparation/sandbox.py | Fail-closed isolation preflight/execution/qualification, no model credentials |
+| src/datamate/preparation/sandbox.py | Conditional Level 2 only: fail-closed isolation/execution/qualification, no model credentials; do not create before Task 21 activation |
 | src/datamate/preparation/pipeline.py | Orchestration, versions/fingerprints, atomic publication and PreparedBusiness compatibility |
-| src/datamate/evaluation/normalization.py | Reference-only contracts/selection/proof checks/scoring, never imported by preparation |
-| src/datamate/evaluation/normalization_campaign.py | Controlled baseline/freeze/checkpoint/report orchestration |
+| src/datamate/evaluation/normalization.py | Select/verify/freeze/scoring functions and concrete evidence verifiers; evaluator-only |
+| src/datamate/evaluation/normalization_campaign.py | Direct baseline/freeze/checkpoint/report functions and one manifest schema; no orchestration framework |
 | src/datamate/inference/budget.py | Existing accounting plus atomic campaign/phase ceiling; no alternate ledger |
 | tests/normalization_fixtures.py | Synthetic fixture helpers and latent truth, never production input |
 | tests/fixtures/normalization/catalog_cases.json | Corrected44-case IDs/owner/task mapping, no business answer totals |
@@ -67,7 +70,7 @@ under existing state/suites, state/prepared and state/runs locations.
 
 ## Shared interface decisions
 
-Task 1 defines evaluator-only PilotPolicy, SourceSnapshot, CaseManifest, ReferenceEvidencePacket, ReferenceProposal,
+Task 1 defines evaluator-only PilotPolicy, SourceSnapshot, CaseManifest, ReferenceProposal,
 ProofCheckResult, AdjudicatedReference, ReferenceSuite, CandidateResultSet and NormalizationMetrics.
 Task 2 defines production types used by later task signatures:
 
@@ -78,13 +81,31 @@ Task 2 defines production types used by later task signatures:
 - CleaningStep(step_id,operation,operation_version,parameters,input_scope,evidence_refs), CleaningPlan(plan_id,source_digest,profile_digest,binding_digest,steps,version).
 - CandidateFact(fact_id,table_role,values), RawDisposition(record_id,kind,reason,evidence_refs), LineageEdge(fact_id,record_id,column_id,step_id), TransformEvent and ProjectionResult(fact_counts,disposition_count,lineage_count).
 - AuditCheck, AuditSpec, AuditFinding, AuditReport(findings,counts,critical_failures), DependencyGraph, ScopeQualification(status,reasons,dependencies,declared_coverage,observed_range), Qualification(scopes,business_status).
-- PreparationPolicy(mode,batch_size,limits,profile_paths,campaign_id); mode is registry/adaptive/replay. Default registry never opens an HTTP transport. Optional profiles are loaded only by explicitly allowed adaptive execution.
+- PreparationPolicy(mode,batch_size,limits,profile_paths,campaign_id,generated_python="disabled"); mode is registry/adaptive/replay. generated_python is disabled/enabled, frozen in the run manifest, never auto-toggled on failure. Registry never opens an HTTP transport; adaptive profiles require explicit authorization.
 - PublishedProjection(view_id,columns,factual_scope,qualification_digest,provenance); no private relation names or blocked fields are allowed in columns. Task 14 creates these only after Task 16 supplies qualification.
 
 Use Pydantic at serialized boundaries, immutable dataclasses internally where useful.
 TypedValue is RawValue|Decimal; JSON encoding is tagged where necessary. Do not put
 DataFrame/callables/free-form executable code into serialized CleaningPlan parameters.
 All methods below use these shared types rather than independently redefining them.
+
+### Boundary and internal type policy
+
+| Decision | Types / implementation |
+| --- | --- |
+| KEEP distinct | RawRecord, CandidateFact, RawDisposition, LineageEdge, TransformEvent: immutable internal records, separate accounting and invariant checks; persist through controlled DuckDB schema/constraints and audit |
+| KEEP validated boundaries | EvidenceRef; StagedTable/ColumnProfile/TableProfile; RuleClause/Binding/SemanticBindings/MeasurePolicy; CleaningStep/CleaningPlan; AuditCheck/AuditSpec/AuditFinding/AuditReport; ScopeQualification/Qualification/PreparationPolicy/PublishedProjection; validate when crossing trust or persistence boundaries, not on every internal hop |
+| KEEP evaluator boundaries | PilotPolicy/SourceSnapshot/CaseManifest/ReferenceSuite, ReferenceProposal/ProofCheckResult/AdjudicatedReference, NormalizationMetrics/CampaignPolicy/CampaignRunManifest; proposal validation cannot accept authoritative verification outcomes |
+| KEEP solver isolation | NormalizationIssue/EvidencePacket; reference-only fields are forbidden and evaluator modules are not imported |
+| INTERNAL ONLY | SampleRef/ClauseMatch/DependencyGraph; OperationState/BatchResult/ProjectionResult; ParseCandidate/ParseDecision/StructuralDecision/EntityResolution/UnitResolution; CandidateResultSet/RecoveryPolicy/RecoveryResult: dataclasses or typed structures; persisted parent records still validate embedded values |
+| INTERNAL ONLY | CandidateFreeze(manifest_path:Path,sha256:str), CheckpointReservation(ledger_path:Path,checkpoint_key:str,claim_id:str); manifest bytes and SQLite state are authoritative, not caller-provided booleans |
+| MERGE at the compatible boundary | Legacy Evidence is an alias/adapter for EvidenceRef; preserve old wire behavior and reject insufficient proof. No standalone ReferenceEvidencePacket DTO: evaluator constructs bounded reference input from case/source evidence, retaining provenance in the persisted reference records; never reuse solver EvidencePacket |
+| DEFER until Level 2 activation | SandboxSpec/SandboxQualification/MicroTransformInput/MicroTransformOutput and Dockerfile/backend implementation. Mandatory capability-status/disabled-execution guards live in existing adaptive/campaign code |
+
+RawValue/TypedValue remain aliases. Keep SourceRow/SourceTable/SourceFile/BusinessInputs,
+PreparedBusiness and legacy ColumnPlan/TablePlan compatibility. No speculative ABC,
+protocol or registry for verifiers/runners. The reviewed operation/version registry is
+required and retained. Add a new verifier/adapter only for a concrete consumer and test.
 
 ### Corrected catalog ownership
 
@@ -118,11 +139,19 @@ responsibility, not rules to apply without active-source evidence.
 
 ## Execution order
 
-Tasks 1–4 establish contracts/raw/profiles/hidden references. Tasks 5–15 implement source
-semantics and deterministic candidates;16–17 audit and publish. Task 18 accounting can
-run independently after Task 1, but must land before any live model call. Tasks 19–21
-add adaptive execution and sandbox. Tasks 22–24 integrate, benchmark and qualify.
-Reference adjudication runs independently after Task 3/4, before learner baseline.
+Tasks 1–4 establish contracts/raw/profiles/hidden references. Tasks 5–17 implement
+semantics, deterministic candidates, audits and publication. Emit a source-only
+diagnostic on the four development businesses after Task 17, before adaptive expansion.
+Task 18 can land after Task 1 and must precede all live model calls. Tasks 19/22/23
+provide evaluation/reference/integration gates; Task 20 delivers mandatory Level 1.
+Task 24 starts with Level 1 smoke/baseline, at most two development improvements, then
+final freeze/checkpoint. Task 21 is conditional: activate only for a documented gap
+from the development diagnostic/Level 1 results and finish it before final freeze.
+Land Task 21's mandatory status/disabled-capability guards before Task 24 smoke;
+make its activation decision after development evidence. Defer the OCI backend when
+not activated. This ordering avoids a dependency cycle between guards and the pilot.
+Reference adjudication runs independently after Task 3/4, before learner baseline;
+selection/expectations are never derived from candidate outputs.
 At execution start create feat/adaptive-normalization from the current
 feat/milestone1-harness HEAD containing the approved design and this plan; do not
 restart from main or discard the existing Stage1/Stage2/harness implementation.
@@ -165,7 +194,7 @@ Task 24 is a controlled experiment/report task, not a new production implementat
 ### Task 1: Correct source contracts and freeze pilot policy (P0)
 
 **Files:** Modify docs/normalization/NORMALIZATION_SPEC.md, docs/normalization/ERROR_CATALOG.md; create config/normalization/pilot.json, src/datamate/evaluation/normalization.py, tests/fixtures/normalization/catalog_cases.json, tests/test_normalization_references.py.
-**Interfaces:** Produces the evaluator-only shared types above, snapshot_sources(split_root:Path,business_ids:Sequence[str],*,split_id:str)->SourceSnapshot, freeze_selection_policy(policy:PilotPolicy,sources:SourceSnapshot)->str and load_pilot_policy(path:Path)->PilotPolicy. Snapshot uses the existing discovery allowlist, never question/answer/reference files. Case/ref types have case_id,source hashes,scope,assertions and versions; evidence_status is separate from expected_behavior.
+**Interfaces:** Produces the evaluator-only shared types above, snapshot_sources(split_root:Path,business_ids:Sequence[str],*,split_id:str)->SourceSnapshot, freeze_selection_policy(policy:PilotPolicy,sources:SourceSnapshot)->str and load_pilot_policy(path:Path)->PilotPolicy. Snapshot uses discovery's source allowlist, never the QA suite builder or broad split hashing that reads questions/answers. Case/ref records have case_id,source hashes,scope,assertions and versions; evidence_status is separate from expected_behavior. ReferenceProposal forbids authoritative verification fields; only evaluator verification can construct an accepted AdjudicatedReference.
 
 - [ ] Write test_pilot_policy_is_five_train_businesses_and_has_no_labels: assert four exact Excel IDs, biz_123 checkpoint, seed 42,20 cases/business,10 determinate minimum, campaign 120 and20/60/40 caps; reject unknown/duplicate business IDs in selection and label/prediction paths.
 - [ ] Write test_catalog_has_44_unique_owned_cases and test_spec_temporal_warranty_rules_match_active_sources: IDs 1..44; every case has N/M/Q owner and owning task; no fixed 2026 rule, unconditional warranty exclusion or price-only merge. Count assertions are documentary contracts, not business data targets.
@@ -186,7 +215,7 @@ assert case_ids == set(range(1, 45))
 ### Task 2: Raw storage, stable identity and 1:N production contracts (P1)
 
 **Files:** Modify src/datamate/preparation/models.py, src/datamate/preparation/normalization.py, src/datamate/preparation/pipeline.py; create src/datamate/preparation/storage.py, tests/test_normalization_storage.py.
-**Interfaces:** Produces all production shared types; create_storage(db:DuckDBPyConnection)->None, stage_table(db,source:SourceFile,table:SourceTable)->StagedTable, iter_raw_batches(db,table_id:str,batch_size:int)->Iterator[list[RawRecord]]. raw values are immutable; consume SourceTable.rows exactly once.
+**Interfaces:** Defines the shared production contracts using the boundary/internal policy above; implement behavior in its owning task, without speculative helper/framework scaffolding. create_storage(db:DuckDBPyConnection)->None, stage_table(db,source:SourceFile,table:SourceTable)->StagedTable, iter_raw_batches(db,table_id:str,batch_size:int)->Iterator[list[RawRecord]]. Raw values are immutable; consume SourceTable.rows exactly once. Do not create duplicate Pydantic DTOs for every raw/fact persistence hop.
 
 - [ ] Write test_staging_preserves_types_formulas_keys_preamble_and_distinct_row_identity and test_one_raw_row_can_have_two_facts_but_one_disposition. Assert two identical source rows have different IDs, exact tagged raw values survive, two lineage edges do not double raw accounting and duplicate dispositions fail.
 
@@ -226,10 +255,11 @@ assert accepted_key_count == 0  # overlapping, nonunique fixture
 ### Task 4: Blind case selection, proof checks and reference freezing (P0/P1)
 
 **Files:** Modify src/datamate/evaluation/normalization.py, tests/test_normalization_references.py; create tests/normalization_fixtures.py.
-**Interfaces:** select_cases(policy:PilotPolicy,sources:SourceSnapshot,profiles:Sequence[TableProfile])->CaseManifest; check_reference_proof(proposal:ReferenceProposal,evidence_reader:Callable[[EvidenceRef],object])->ProofCheckResult; adjudicate_reference(proposal,proof)->AdjudicatedReference; freeze_reference_suite(manifest,references)->ReferenceSuite. Helpers in tests/normalization_fixtures.py create deterministic source snapshots and independently specified latent truth.
+**Interfaces:** select_cases(policy:PilotPolicy,sources:SourceSnapshot,profiles:Sequence[TableProfile])->CaseManifest; check_reference_proof(proposal:ReferenceProposal,evidence_reader:Callable[[EvidenceRef],object])->ProofCheckResult; adjudicate_reference(proposal:ReferenceProposal,proof:ProofCheckResult)->AdjudicatedReference; freeze_reference_suite(manifest:CaseManifest,references:Sequence[AdjudicatedReference])->ReferenceSuite. These are direct functions in src/datamate/evaluation/normalization.py. A bounded evaluator input packet is assembled from case/source evidence without a standalone ReferenceEvidencePacket class. Synthetic helpers live in tests/normalization_fixtures.py.
 
 - [ ] Write test_selection_is_seeded_source_order_independent_and_frozen_before_results and test_unresolved_reference_is_not_replaced. Assert100IDs,20/business,80dev/20checkpoint; same inputs/seed yield same IDs; changed source/policy rejects reuse; unresolved stays in original manifest.
 - [ ] Write test_reviewer_cannot_self_assert_verified, test_ambiguous_scale_total_is_not_proof, test_verified_refusal_does_not_count_as_determinate and test_reference_revision_changes_digest. Synthetic price1.000/qty2/total2.000 alone cannot select scale; confidence/consensus cannot promote a label.
+- [ ] Add test_proposal_rejects_authoritative_verification_fields and test_unknown_proof_kind_stays_unresolved; a model cannot supply a trusted checker outcome or select an executable verifier.
 
 ```python
 assert (len(case_ids), len(dev_case_ids), len(checkpoint_case_ids)) == (100, 80, 20)
@@ -237,10 +267,12 @@ assert selected_before_results == selected_after_source_reordering
 assert unproved_numeric_scale_reference.evidence_status != "VERIFIED"
 assert verified_refusal_determinate_count == 0
 assert old_reference_digest != revised_reference_digest
+assert proposal_supplied_verification_accepted is False
+assert unknown_proof_evidence_status == "UNRESOLVED"
 ```
 
 - [ ] Run uv run --locked pytest tests/test_normalization_references.py -q; expect missing selection/proof behavior.
-- [ ] Implement evaluator-owned proof dispatch for exact source observations, scoped row equality, explicit scale/unit/role plus independent arithmetic, trusted-key checks, declared absence and demonstrated ambiguity. Do not import candidate parsing/binding acceptance to derive expected values. Require versioned independent adjudication for unsupported natural-language proofs.
+- [ ] Implement concrete evaluator-owned verifier functions with fixed branch dispatch for exact observations, scoped equality, explicit scale/unit/role plus independent arithmetic, trusted keys, declared absence and demonstrated ambiguity. No plugin loader/ABC/dynamic verifier registry. Do not import candidate parsers/binding acceptance to derive expected values. Unknown proofs remain unresolved; add a strategy only for a real case/correctness requirement, with independent evidence and regression tests.
 - [ ] Freeze references under state/suites/normalization-v1 only; commit synthetic helpers and policy, not real values. Add test_reference_sentinel_never_enters_preparation_catalog_or_request using a forbidden expected-value sentinel.
 - [ ] Run reference tests plus tests/test_isolation.py and tests/test_runtime_inputs.py.
 - [ ] Commit: feat(evaluation): add blinded evidence-backed normalization references.
@@ -500,10 +532,11 @@ assert processing_error_reported_as_source_absence is False
 
 ### Task 17: Versioned orchestration, cache migration and publication (P4)
 
-**Files:** Modify src/datamate/preparation/pipeline.py, src/datamate/preparation/__main__.py, src/datamate/preparation/storage.py; extend tests/test_preparation.py and tests/test_preparation_cli.py.
-**Interfaces:** build_candidate(db:DuckDBPyConnection,plan:CleaningPlan,bindings:SemanticBindings)->ProjectionResult; prepare_business(split_root:Path,business_id:str,cache_root:Path,*,split_id:str,plans:dict[str,TablePlan]|None=None,policy:PreparationPolicy|None=None)->PreparedBusiness keeps the existing positional/keyword boundary and adds optional policy. Returned catalog includes artifact_version=2,qualified projections,capabilities and evidence. Task 14 publish_projections runs after successful scoped audit and before atomic artifact publication.
+**Files:** Modify src/datamate/preparation/pipeline.py, src/datamate/preparation/__main__.py, src/datamate/preparation/storage.py, pyproject.toml and uv.lock; extend tests/test_preparation.py and tests/test_preparation_cli.py.
+**Interfaces:** build_candidate(db:DuckDBPyConnection,plan:CleaningPlan,bindings:SemanticBindings)->ProjectionResult; prepare_business(split_root:Path,business_id:str,cache_root:Path,*,split_id:str,plans:dict[str,TablePlan]|None=None,policy:PreparationPolicy|None=None)->PreparedBusiness keeps the existing boundary. Catalog includes artifact_version=2,qualified projections,capabilities/evidence. Task 14 publish_projections runs after scoped audit, before atomic publication. diagnose_preparation(db:DuckDBPyConnection,*,resources:dict[str,object])->dict[str,object] in src/datamate/preparation/pipeline.py reads existing staged/profile/binding/event/audit/qualification metadata using trusted read-only queries. It returns a bounded summary without labels, model calls, extra normalization or qualification mutation; missing stage data stays unknown.
 
 - [ ] Write test_v2_rejects_legacy_cache_and_binds_compiler_validator_versions, test_failed_audit_or_source_drift_never_publishes and test_replay_matches_logical_facts_not_db_bytes. Assert source ABA, corrupt cache, stale policy and code outside preparation invalidate; failed candidates never expose complete manifests.
+- [ ] Add test_diagnostic_is_label_free_and_does_not_change_qualification and test_diagnostic_preserves_denominators_and_unknown_measurements. Assert raw/disposition counts, accepted/unresolved/conflict bindings, parse ambiguity units, scope statuses, audit failures, unsupported families and measured resources. Forbidden label/checkpoint readers and HTTP transports must never be opened; missing fields remain unknown and failed builds are not promoted.
 
 ```python
 assert published_catalog_version == 2
@@ -512,11 +545,18 @@ assert failed_build_has_complete_manifest is False
 assert changed_validator_fingerprint != original_fingerprint
 assert replay_facts_and_lineage == original_facts_and_lineage
 assert registry_http_attempts == 0
+assert diagnostic_disposition_count == full_disposition_count
+assert diagnostic_declared_coverage == original_declared_coverage
+assert diagnostic_unknown_rss is None
+assert qualification_digest_after_diagnostic == qualification_digest_before_diagnostic
+assert diagnostic_checkpoint_claims == diagnostic_http_attempts == 0
 ```
 
 - [ ] Run uv run --locked pytest tests/test_preparation.py tests/test_preparation_cli.py -q; expect new orchestration/version failures.
 - [ ] Replace _ingest_table interleaving with stage->profile->bind->plan->project->audit->publish. Preserve source snapshot/checksum/exclusive-lock/atomic-directory behavior. Default registry mode never creates an HTTP client. Replay requires frozen accepted plans and matching dependencies.
+- [ ] Add/lock psutil for process-tree telemetry and the approved preparation watchdogs here, so the early diagnostic has real memory/time/disk evidence. Record enforcement/completeness; unavailable measurements are unknown, not zero. Enforce the existing CPU-build limits before full pilot processing.
 - [ ] Publish qualification embedded in DB/catalog and complete manifests only. Keep old caches untouched; explicit legacy fixtures can still test I/O, but cannot claim v2 readiness. Preserve the --plans compatibility adapter with validated source evidence.
+- [ ] Emit the diagnostic from existing build/profile/audit evidence (including failed candidates), optionally through --diagnostic-path on preparation CLI, under ignored state/runs/normalization. After Task 17 emit the four-development-business summary; do not add a full pass solely for reporting. No QA/checkpoint labels, checkpoint reservation or baseline/final score claim. Existing stage errors remain visible; missing statistics are unknown.
 - [ ] Run focused and full pytest/Ruff; expect PASS.
 - [ ] Commit: refactor(preparation): publish only versioned capability-qualified artifacts.
 
@@ -538,6 +578,7 @@ assert cap_change_rejected is True
 
 - [ ] Run uv run --locked pytest tests/test_budget.py -q; expect missing campaign methods/schema.
 - [ ] Add transactional campaign/phase policy and attempt linkage to the same SQLite ledger. acquire atomically checks RPM/day/run/campaign/phase and records one actual attempt; reopening same campaign with changed caps fails. Do not label pre-acquire context rejection as a sent attempt.
+- [ ] Keep this as a small migration and direct methods on RequestBudget; preserve historical counters and bind run/campaign/phase consistently. No second ledger, scheduler, experiment registry or event bus. Task 19 checkpoint state uses this same SQLite file.
 - [ ] Test429/transient retries, format repairs, reference NIM calls and restart/run-ID changes against shared limits using MockTransport; max_retries=1 for this campaign, SDK retries0. Snapshot reports actual usage/completeness and current UTC remaining allowance, not old776 arithmetic.
 - [ ] Run budget/client tests and full suite; expect PASS.
 - [ ] Commit: feat(inference): enforce shared normalization campaign limits.
@@ -545,10 +586,11 @@ assert cap_change_rejected is True
 ### Task 19: Evaluator runner and baseline capture before improvements (P6 infrastructure)
 
 **Files:** Create src/datamate/evaluation/normalization_campaign.py, tests/test_normalization_campaign.py; extend src/datamate/evaluation/normalization.py.
-**Interfaces:** score_normalization(results:CandidateResultSet,suite:ReferenceSuite)->NormalizationMetrics; run_development_baseline(policy:PilotPolicy,suite:ReferenceSuite,prepare:Callable)->CampaignRunManifest; freeze_candidate(manifest:CampaignRunManifest)->CandidateFreeze; reserve_checkpoint(freeze:CandidateFreeze,ledger_path:Path)->CheckpointReservation; run_frozen_verification(freeze:CandidateFreeze,reservation:CheckpointReservation,suite:ReferenceSuite,prepare:Callable)->CampaignRunManifest. Define these evaluator-only records in src/datamate/evaluation/normalization_campaign.py. Baseline/final use distinct phase cache roots under state/prepared and must execute complete CPU audits; a ready-cache hit is not a measured preparation pass. Record cold/replay mode and accepted-plan reuse explicitly; immutable caches are never overwritten.
+**Interfaces:** score_normalization(results:CandidateResultSet,suite:ReferenceSuite)->NormalizationMetrics; run_development_baseline(policy:PilotPolicy,suite:ReferenceSuite,prepare:Callable)->CampaignRunManifest; freeze_candidate(manifest:CampaignRunManifest,output_dir:Path)->CandidateFreeze; reserve_checkpoint(freeze:CandidateFreeze,ledger_path:Path)->CheckpointReservation; run_frozen_verification(freeze:CandidateFreeze,reservation:CheckpointReservation,suite:ReferenceSuite,prepare:Callable)->CampaignRunManifest. Use direct functions and one strict manifest schema in src/datamate/evaluation/normalization_campaign.py, with record_kind=frozen_spec/result and digest-linked records. CandidateFreeze and CheckpointReservation are the internal values defined above, not orchestration classes. Frozen spec bytes/digest are persisted before execution; result records carry measurements, qualification and metrics afterward without overwriting the spec. Baseline/final use distinct phase cache roots under state/prepared and execute complete CPU audits; ready-cache hits are not measured preparation passes. Record cold/replay mode and accepted-plan reuse explicitly.
 
 - [ ] Write test_metrics_keep_abstentions_and_quarantine_in_denominator, test_verified_refusal_is_not_positive_coverage and test_baseline_final_share_80_cases. Zero commitments gives undefined correctness; model agreement has a separate label; fewer than ten verified determinate/business prevents PASS.
 - [ ] Write test_checkpoint_is_atomic_single_use_and_has_no_pretuning_diagnostics, test_changed_sources_or_refs_abort_before_execution and test_new_run_or_candidate_id_cannot_relabel_exposed_checkpoint. Reservation occurs immediately before execution; a started failed checkpoint stays consumed. Consumption binds the pilot/source/checkpoint identity, not only a new candidate hash. Later exposed-source runs are marked regression, never a fresh locked checkpoint. Report 20 checkpoint cases separately from 80 dev and do not disclose their labels to learner calls.
+- [ ] Add test_crash_after_checkpoint_claim_keeps_it_consumed, test_reference_revision_does_not_rearm_checkpoint and test_result_preserves_frozen_spec_digest. Frozen data is verified by content hash/write-once persistence, not merely frozen=True on a model with mutable nested values.
 
 ```python
 assert verified_determinate_denominator == 12  # includes 2 abstained/quarantined cases
@@ -557,20 +599,24 @@ assert zero_commitment_correctness is None
 assert baseline_case_ids == final_case_ids and len(final_case_ids) == 80
 assert successful_checkpoint_reservations == 1
 assert failed_started_checkpoint_is_consumed is True
+assert checkpoint_claims_after_reference_revision == 1
+assert result_parent_spec_digest == frozen_spec_digest
 ```
 
 - [ ] Run uv run --locked pytest tests/test_normalization_campaign.py tests/test_normalization_references.py -q; expect missing runner/metrics.
-- [ ] Implement reproducible manifests binding source/reference/code/profile/prompt/operation/audit versions, measured resource/API outputs, failed artifact persistence and no automatic repair of locked results. Add psutil/lockfile for process-tree telemetry and approved safety watchdogs; distinguish measured/watchdog from kernel limits.
+- [ ] Implement manifests binding pilot/source/reference/code/config/profile/prompt/operator/validator/audit versions, frozen IDs, execution mode, measured resources/API/token completeness and results. Compose common RunMetadata fields without adding evaluator-only fields to solver contracts; reuse Task 17 resource evidence. No manager classes, generalized scheduler or event bus.
+- [ ] Implement checkpoint claim/state using BEGIN IMMEDIATE and a unique pilot/source/checkpoint-selection key in the existing inference ledger. Claim STARTED immediately before execution after hash validation; STARTED/SUCCEEDED/FAILED remain consumed. Validate receipts against SQLite; new run/candidate/reference IDs cannot release or rearm the checkpoint. Persist failed results and never repair locked results automatically.
 - [ ] Mock prepare/client in unit tests; no real full-data/model run here.
 - [ ] Commit: feat(evaluation): add normalization baseline and immutable checkpoint runner.
 
-### Task 20: Bounded proposal-only SLM fallback and rollback (P5)
+### Task 20: Mandatory Level 1 typed proposals and rollback (P5)
 
 **Files:** Create src/datamate/preparation/adaptive.py, tests/test_adaptive_normalization.py; modify src/datamate/preparation/pipeline.py, src/datamate/inference/config.py and src/datamate/inference/client.py only for reused interfaces where required.
-**Interfaces:** RecoveryPolicy(max_rounds=2,logical_requests_per_round=2,transport_retries=1); async recover_issue(issue:NormalizationIssue,evidence:EvidencePacket,proposer:Callable,executor:Callable,auditor:Callable,policy:RecoveryPolicy)->RecoveryResult. Define production NormalizationIssue/EvidencePacket/RecoveryResult in src/datamate/preparation/models.py (no evaluator labels; evaluator reference packets use a distinct ReferenceEvidencePacket name).
+**Interfaces:** RecoveryPolicy(max_rounds=2,logical_requests_per_round=2,transport_retries=1); async recover_issue(issue:NormalizationIssue,evidence:EvidencePacket,proposer:Callable,executor:Callable,auditor:Callable,policy:RecoveryPolicy)->RecoveryResult. Production NormalizationIssue/EvidencePacket live in src/datamate/preparation/models.py; RecoveryPolicy/RecoveryResult are internal typed values. Evaluator reference records/packets are never reused as solver EvidencePacket. PreparationPolicy.generated_python defaults disabled; mandatory rejection guards live in src/datamate/preparation/adaptive.py without importing/creating an OCI backend.
 
 - [ ] Write test_two_round_two_request_one_retry_bound, test_same_hypothesis_stops_without_extra_call, test_unsafe_plan_cannot_mutate_db and test_destructive_failure_rolls_back. Worst case<=8HTTP attempts/issue and shared campaign stops earlier; format repair consumes the second logical request.
 - [ ] Add test_oversized_evidence_requires_explicit_reselection and test_reference_sentinel_is_absent_from_serialized_request. Context refusal sends zero attempts; omission tracking must show removed evidence rather than silently truncating a document.
+- [ ] Add test_disabled_microcode_is_rejected_before_backend_start, test_code_cannot_hide_in_operator_parameters and test_reference_artifact_is_not_solver_evidence. Reject arbitrary Python/SQL/executable expressions; unknown operations fail explicitly and leave dependent scopes unresolved. Reviewed operations retain typed parameter limits and independent semantic checks.
 
 ```python
 assert proposal_rounds <= 2
@@ -580,33 +626,53 @@ assert context_rejected_http_attempts == 0
 assert rejected_candidate_state_after == candidate_state_before
 assert reference_sentinel not in serialized_candidate_request
 assert fallback_model_changes == fallback_mode_changes == 0
+assert disabled_backend_start_count == 0
+assert hidden_executable_parameter_accepted is False
+assert reference_artifact_validated_as_solver_evidence is False
 ```
 
 - [ ] Run uv run --locked pytest tests/test_adaptive_normalization.py -q; expect missing fallback contract.
-- [ ] Reuse inference_model/ModelProfile and PydanticAI typed output functions to propose CleaningPlan steps. Existing operators first; validate source/version/evidence before execution. Apply in a candidate transaction and independently audit affected dependencies before commit. Persist accepted/rejected plan hashes and errors.
+- [ ] Reuse inference_model/ModelProfile and PydanticAI typed outputs for registered CleaningPlan steps/typed parameters only. Validate source/version/evidence and preservation constraints, execute in a candidate transaction, then independently audit affected dependencies before commit. Persist accepted/rejected hashes/errors. No generic executor/plugin infrastructure or arbitrary generated code at Level 1.
 - [ ] Test offline registry/replay opens no network, no profile/mode fallback, budget exhaustion preserves PARTIAL scopes, and unqualified microcode cannot reach exec.
 - [ ] Commit: feat(preparation): add budgeted evidence-guided adaptive plans.
 
-### Task 21: Qualified isolated micro-transform backend (P5)
+### Task 21: Capability decision and conditional Level 2 backend (P5)
 
-**Files:** Create src/datamate/preparation/sandbox.py, requirements/Dockerfile.normalization-sandbox, tests/test_normalization_sandbox.py; modify src/datamate/preparation/adaptive.py, pyproject.toml pytest marker registration.
-**Interfaces:** SandboxSpec(image_digest,confinement,limits), SandboxQualification(spec_digest,status,evidence_hashes), MicroTransformInput(code_hash,code,batch,schema,source_ids), MicroTransformOutput(records,events,lineage). qualify_backend(spec:SandboxSpec)->SandboxQualification; execute_micro_transform(request,qualification)->MicroTransformOutput. No model client/secrets in this module/container.
+**Files:** Mandatory gate tests extend tests/test_adaptive_normalization.py and tests/test_normalization_campaign.py; capability reporting uses existing src/datamate/preparation/adaptive.py and src/datamate/evaluation/normalization_campaign.py. Only after activation create src/datamate/preparation/sandbox.py, requirements/Dockerfile.normalization-sandbox, tests/test_normalization_sandbox.py and register the oci pytest marker in pyproject.toml.
+**Interfaces:** Always use PreparationPolicy.generated_python and a manifest level2_status of DISABLED/UNQUALIFIED/QUALIFIED. These do not replace audit PASS/FAIL/N/A/UNRESOLVED or scope READY/PARTIAL/BLOCKED. Record the development issue family, affected records/scopes, semantic evidence, registry gap, reviewed-operator alternative and activation/defer reason in the existing campaign manifest. No new decision service/class. Only when activated define SandboxSpec(image_digest,confinement,limits), SandboxQualification(spec_digest,status,evidence_hashes), MicroTransformInput(code_hash,code,batch,schema,source_ids), MicroTransformOutput(records,events,lineage); qualify_backend(spec:SandboxSpec)->SandboxQualification and execute_micro_transform(request:MicroTransformInput,qualification:SandboxQualification)->MicroTransformOutput in src/datamate/preparation/sandbox.py.
 
-- [ ] Write unit tests test_native_exec_fails_closed, test_qualification_binds_image_and_limits and test_oversized_or_untyped_output_is_rejected. Mocked argv only proves command construction, never isolation status.
+**Activation:** Use Task 17's development diagnostic and Task 24's Level 1 smoke/baseline evidence, never checkpoint labels. Default is DISABLED. Activate only for a significant evidenced capability gap for which a reusable reviewed operator is not a reasonable solution. Missing semantic evidence is not such a gap. Activation occurs before final freeze, changes no request/resource/improvement caps and never silently toggles on failure. If not activated, defer the backend/DTO/Dockerfile steps below and report DISABLED; no OCI dependency is introduced for Level 1.
+
+- [ ] Write test_level1_pass_does_not_qualify_level2, test_disabled_level2_does_not_mask_required_capability_failure and test_enabled_unqualified_level2_prevents_pass. Missing OCI alone does not fail an otherwise fully qualified Level 1 run; an unmet mandatory data capability still fails the gate.
 
 ```python
+assert level2_status_when_disabled == "DISABLED"
+assert level2_status_after_level1_pass != "QUALIFIED"
+assert milestone_status_with_missing_required_capability != "PASS"
+assert milestone_status_with_enabled_unqualified_level2 != "PASS"
 assert native_generated_code_executions == 0
+```
+
+- [ ] Run uv run --locked pytest tests/test_adaptive_normalization.py tests/test_normalization_campaign.py -q; expect missing capability-report/gate assertions.
+- [ ] Implement the mandatory status/disabled guards and manifest validation in the existing modules; no backend import while disabled. Re-run the exact task command; expect PASS.
+- [ ] Commit: feat(preparation): enforce adaptive capability activation and reporting.
+- [ ] Record the activation/defer decision from development evidence; do not invent proof of feature parity or change frozen case IDs. Unmet required normalization/reference gates stay PARTIAL. If deferred, stop this task's backend work here with its conditional status explicit.
+- [ ] If activated, write test_native_exec_fails_closed, test_qualification_binds_image_and_limits and test_oversized_or_untyped_output_is_rejected in tests/test_normalization_sandbox.py. Assert mocked argv/skipped OCI tests cannot produce QUALIFIED, changed image/limits invalidate qualification and forbidden host mounts are absent.
+
+```python
 assert qualified_from_mocked_argv_only is False
 assert qualification_after_limit_or_image_change != "QUALIFIED"
 assert qualification_when_oci_tests_skipped != "QUALIFIED"
 assert forbidden_host_mounts == set()
+assert microcode_in_cleaning_plan_parameters_accepted is False
 ```
 
-- [ ] Run uv run --locked pytest tests/test_normalization_sandbox.py -m 'not oci' -q; expect missing backend.
-- [ ] Implement pinned Linux OCI runner with no network/read-write-root/privileges/host data/reference/secrets/socket access, nonroot/no-new-privileges/cap-drop/seccomp and approved CPU/RAM/swap/PID/time/tmpfs caps. Pass bounded serialized input/output; no pickle, shell or emitted SQL in host. AST screening supplements real isolation.
-- [ ] Add marked oci tests that actually attempt file/network access, memory/process/time exhaustion, tmp/output overflow and child survival. Existing provided/pinned image is required; detect absent daemon/image/enforcement, report UNQUALIFIED/PARTIAL and continue safe native tasks. Do not automatically pull large images/start paid jobs. If a build is needed, require an explicitly selected digest-qualified base and preserve its provenance.
-- [ ] Run uv run --locked pytest tests/test_normalization_sandbox.py -m oci -q only in provided supported environment. A skip is not PASS; save backend qualification under state/runs/normalization/security. Record environmental qualification separately with actual results.
-- [ ] Commit: feat(preparation): isolate generated micro-transform execution.
+- [ ] If activated, run uv run --locked pytest tests/test_normalization_sandbox.py -m 'not oci' -q; expect missing backend APIs.
+- [ ] If activated, implement the pinned Linux OCI runner: network disabled, read-only root, nonroot/no-new-privileges/cap-drop/seccomp, no privileged/host data/reference/secrets/socket access and approved CPU/RAM/swap/PID/time/tmpfs/output caps. Pass bounded serialized data; no pickle, shell or emitted SQL in host. AST checks supplement actual isolation.
+- [ ] If activated, connect an explicitly selected typed MicroTransformInput proposal route to the same bounded inference/recovery/accounting path. Validate hashes, source IDs, schema and input/output sizes, require current qualification, then independently audit transactional results/lineage before acceptance. Generated code is never hidden inside Level 1 CleaningPlan parameters and never runs in the host. This route uses the same profile, per-issue request bounds and campaign caps; no silent fallback.
+- [ ] If activated, add real marked oci tests for file/network denial, memory/process/time limits, tmp/output overflow and process-tree termination. Use a provided pinned image; record missing daemon/image/enforcement as UNQUALIFIED/PARTIAL. Do not auto-pull large images/start paid jobs or relax confinement.
+- [ ] If activated, run uv run --locked pytest tests/test_normalization_sandbox.py -m 'not oci' -q; expect PASS. Run uv run --locked pytest tests/test_normalization_sandbox.py -m oci -q only in the supplied supported environment; skipped/unrun tests do not qualify it. Save actual qualification evidence under state/runs/normalization/security.
+- [ ] If activated and quality gates pass, commit: feat(preparation): isolate generated micro-transform execution. Report code/unit verification separately from actual backend qualification.
 
 ### Task 22: Minimal qualified runtime adapter and shared CLI (P6)
 
@@ -625,7 +691,7 @@ assert runtime_ddl_attempts == 0
 
 - [ ] Run uv run --locked pytest tests/test_runtime_tools.py tests/test_runtime_batch.py -q; expect new catalog/qualification assertions failing.
 - [ ] Consume Task 14/17's already-published trusted flat projections, enforce v2 catalog scope and declared provenance, retain AST physical-source/function restrictions. Runtime opens artifacts read-only and creates no views. Change batch only to pass the new qualified artifact; do not redesign answering prompts/tools/planning. Registry/replay CLI uses existing prepare_business entry point and explicit policy; model calls require --allow-model-calls with a profile/campaign.
-- [ ] Add shared evaluator commands normalization-eval with actions select/references/baseline/freeze/verify/report; no action reads QA questions/answers and no preparation import reaches evaluator. Resource/API flags bind frozen manifests; --offline denies all HTTP.
+- [ ] Add shared evaluator commands normalization-eval with actions select/references/baseline/freeze/verify/report; no action reads QA questions/answers and no preparation import reaches evaluator. Resource/API flags bind frozen manifests; --offline denies all HTTP. Surface the frozen generated_python setting/status without a bypass flag or automatic backend fallback; reuse Task 17 diagnostics.
 - [ ] Run runtime inputs/isolation/security regressions and full suite.
 - [ ] Commit: feat(runtime): consume qualified normalization artifacts without widening SQL access.
 
@@ -653,7 +719,7 @@ assert checkpoint_labels_in_candidate_context == 0
 
 - [ ] Run uv run --locked pytest tests/test_normalization_references.py tests/test_excel_regressions.py tests/test_normalization.py tests/test_cleaning_operations.py tests/test_semantic_bindings.py tests/test_canonical_projection.py tests/test_periods.py tests/test_intrinsic_audit.py -q; expect missing coverage assertions until completed.
 - [ ] Add minimal missing production support in its owning component using the corresponding task's red/green process, not business-specific corrections.
-- [ ] Instantiate case IDs after profiles and before learner outputs; use a distinct reviewer route/profile to propose references blind to candidate outputs, <=5 initial +5 adjudication jobs. Start reviewers with no inherited conversation/candidate history and supply only the frozen reference evidence packet. Store source/prompt/response/proof provenance and usage UNKNOWN when unavailable. Do not let reviewer set VERIFIED directly.
+- [ ] Confirm Task 4 instantiated/froze case IDs after Task 3 profiles and before learner transformations/results; do not reselect them here. Independent reference work runs alongside Tasks 5–17 and freezes expectations before the learner baseline. Use a distinct reviewer route/profile, <=5 initial +5 adjudication jobs, without inherited candidate/conversation history. Assemble bounded input from frozen case/source evidence; persist prompt/response/proof provenance and UNKNOWN usage where unavailable. Reviewer output cannot set VERIFIED.
 - [ ] Run evaluator proof checks; retain every original unresolved case. Freeze 100 cases and reference versions; require>=10 verified determinate/business or mark real qualification PARTIAL. Never replace hard cases, consume public/QA answers or share checkpoint expectations with learners.
 - [ ] Run full pytest/Ruff and dependency security audit. Commit only synthetic fixtures/code/coverage matrix; store private source/reference artifacts under ignored state.
 - [ ] Commit: test(normalization): complete independent catalog and reference coverage.
@@ -661,26 +727,39 @@ assert checkpoint_labels_in_candidate_context == 0
 ### Task 24: Controlled pilot baseline, improvement budget and final evidence (P6)
 
 **Files:** Modify README.md and docs/engineering/milestone1_report.md for final evidence; update the 44-case status matrix. Generated runs stay in state/runs/normalization and state/prepared; no real artifacts committed.
-**Interfaces:** Consume Tasks 17–23 only. One campaign ledger identity enforces120 total HTTP attempts,20/60/40 phase ceilings, current UTC/day/RPM. Runner produces immutable baseline/freeze/final/checkpoint manifests and reports.
+**Interfaces:** Consume Tasks 17–20/22–23 and Task 21's mandatory capability guards; the Task 21 backend is conditional. One existing ledger identity enforces120 total HTTP attempts,20/60/40 phase ceilings and current UTC/day/RPM. Direct runners produce immutable baseline/frozen-spec/result manifests and a SQLite single-use checkpoint. Level 1 evidence precedes any optional Level 2 implementation; complete an activated backend before final freeze/checkpoint.
 
-- [ ] Preflight source/reference/policy hashes, model profiles/credentials without printing secrets, actual ledger remaining allowance, CPU/disk ceilings and required sandbox qualification. Confirm implementation branch, clean relevant tracked diff and explicit real/reference independence. No model download or unsupported-mode fallback.
+- [ ] Preflight source/reference/policy hashes, model profiles/credentials without printing secrets, actual ledger allowance, CPU/disk ceilings and the explicit Level 1/Level 2 policy. Require actual sandbox qualification if Level 2 is enabled/required; DISABLED Level 2 requires no OCI runtime. Confirm branch, relevant tracked diff, source-only development diagnostic and real/reference independence. No model download or unsupported-mode fallback.
 - [ ] Run small deterministic fixtures, then explicit smoke <=20 HTTP attempts demonstrating accepted/rejected proposals across >=3 operation families; if unavailable/failed, persist the gap and do not expand blind. Capture actual requests/provider usage completeness rather than question counts.
 - [ ] Run one full four-business development baseline of the first working v2 integrated normalizer with frozen 80 cases/full CPU audits; the old QA run and legacy caches are not this baseline. Development phase <=60 HTTP attempts covers baseline and at most 2 major evidence-driven improvement rounds combined. Diagnose categories before changing code. Target fixtures/affected slices after edits; stop unchanged hypotheses/no meaningful improvement/destructive violations/caps. Never inspect locked labels or error breakdown for tuning.
+- [ ] Use the diagnostic/Level 1 development results to record Task 21's decision. Prefer a reusable reviewed operator for evidenced gaps; if Level 2 is justified, complete its conditional backend/qualification within the same campaign/optimization caps before freezing. If an enabled/required backend is unavailable, preserve safe scopes and report PARTIAL; no automatic downgrade or extra spend. The diagnostic is not counted as the frozen baseline.
 - [ ] Freeze code/prompts/profiles/operators/validators/source/reference versions. Reserve checkpoint immediately before execution and run one final/checkpoint verification within 40 HTTP attempts: same 80dev cases plus separate 20 SQLite checkpoint, full required CPU audit across five. Started checkpoint failure consumes its reservation; no automatic repair/rerun.
 - [ ] Score per-business verified determinate/negative cases, preserve quarantined/unresolved denominators, assess false merge/drop/scale/lineage failures and READY dependency scopes, report baseline/final on comparable 80 dev cases and checkpoint separately. No population100% or globally unseen claim.
-- [ ] Run final deterministic/full tests, Ruff, dependency audit and staged secret/diff review. Record actual sandbox/platform status, RAM/time/disk/API/token completeness, retained/reverted improvements and commits. PASS only if every mandatory gate has real evidence; otherwise PARTIAL/BLOCKED component reasons, never extend budget automatically.
+- [ ] Run final deterministic/full tests, Ruff, dependency audit and staged secret/diff review. Record Level 1 evidence, Level 2 activation reason/status, actual sandbox/platform qualification, RAM/time/disk/API/token completeness, retained/reverted improvements and commits. PASS requires all mandatory normalization/reference/audit/reliability/runtime gates and live Level 1 evidence; Level 2 DISABLED alone is not a failure. Enabled/required Level 2 needs real qualification; missing required capability/reference minima remain PARTIAL. Never enlarge caps or relabel skipped OCI tests as passed.
 - [ ] Commit only final docs/status evidence: docs(normalization): record pilot qualification and remaining gates. Stop; no main merge/push/history rewrite or full QA evaluation.
 
 ## Self-review and execution handoff
 
-- [x] Main checked every design section: authority/corrections and pilot in Tasks 1/4; storage/profiles/semantics/operations in Tasks 2–15; audit/qualification/cache in Tasks 16–17; budgets/adaptive/sandbox in Tasks 18/20/21; references/qualification/report in Tasks 19/22–24. Missing SQL/A10 deliverables become tested storage/audit/layout contracts, not assumed external files.
-- [x] Main checked type ownership and signatures, including ReferenceEvidencePacket separation, BatchResult ownership, the complete prepare_business signature and preparation-time publish_projections; fixture helpers stay in tests and references in evaluation.
-- [x] Main assigned all five Review Focus conditions to named tests in Tasks 2/4/9/11/14/16/18/19/21/22; Task24 reports real outcomes. Corrected checkpoint identity reuse, lexicographic budget assertions and cache-hit measurement traps during this review.
-- [x] Main checked proportion and dependency order: 24 independently testable units, 23 short assertion fragments, exact red commands and a shared green/full-suite convention; no program bodies, invented cleanup or additional architecture review loop.
+- [x] Main checked revision-2 spec coverage: all pilot/reference/catalog/budget and source/audit/qualification gates retained; Level 1 mandatory, Level 2 conditional with complete isolation when activated.
+- [x] Main checked type ownership/signatures: separate proposal/proof/reference and raw/fact/disposition invariants, internal receipt/freeze values, evidence DTO removal and evaluator isolation. Diagnostic reads authoritative build metadata rather than incomplete intermediate DTOs.
+- [x] Main checked Review Focus and assigned boundary/crash/diagnostic/capability tests: disabled Level 2 cannot mask a missing required capability; mock/skipped OCI cannot qualify it. Mandatory security guards precede smoke; actual backend tests remain conditional.
+- [x] Main checked all 24 task IDs, red/green commands, proportion and dependency order: Task4 freezes IDs before transformations, reference expectations precede baseline, Task17 telemetry precedes diagnostic, Task18 accounting precedes model calls, and conditional backend precedes final freeze. No implementation, model/full-data runs or substitute self-review dispatch occurred.
+
+## Revision 2 record
+
+The user approved the simplification direction and requested this plan update. A/B/C/E
+are implementation choices: concrete verifiers, direct runners, one existing ledger,
+boundary/internal type discipline and an early source-only diagnostic. D changes the
+approved acceptance scope and is synchronized with spec sections 1/9/10/12/13/14:
+Level 1 is mandatory; Level 2 is conditional/DISABLED by default, with unchanged security
+requirements when activated. This does not claim equal open-ended flexibility or relax
+any required normalization capability. Keep all 24 task IDs, the four-dev/one-checkpoint
+pilot, 100 cases, >=10 verified determinate/business, 44 catalog/88 synthetic minimum, 120 HTTP
+attempts split 20/60/40 and two improvement rounds. No core answering-agent rewrite.
 
 Preserved execution preference: main owns architecture/security/integration/Git;
 selective configured development subagents handle independent bounded work, using
 isolated worktrees for parallel edits. Do not ask to choose this method again.
 After the user reviews this plan, use subagent-driven-development for delegated units
 and executing-plans for main-owned inline work as appropriate to the preserved method.
-No code implementation, model calls or full-data pilot was performed while writing it.
+No product implementation, model calls or full-data pilot was performed while revising it.
