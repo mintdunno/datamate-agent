@@ -5,6 +5,7 @@ import hashlib
 import json
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from functools import wraps
 
@@ -13,6 +14,8 @@ from pydantic_ai.usage import RunUsage, UsageLimits
 
 from datamate.contracts.answers import SubmissionAnswer, parse_submission
 from datamate.contracts.inputs import Question
+from datamate.runtime.context import build_context
+from datamate.runtime.diagnostics import failure_code, safe_tool_feedback
 from datamate.runtime.outputs import output_functions
 from datamate.runtime.semantics import TRAIN_RULEBOOK_SHA256, Period, period_bounds
 from datamate.runtime.tools import StructuredTools
@@ -35,6 +38,9 @@ Use search_schema to find columns, describe_table for physical IDs, inspect_valu
 Use SQL aliases for meaningful outputs; scalar final values must appear exactly in query results.
 For rankings sort the requested metric descending, then code ascending; count all valid candidates.
 Return abstain if applicable rules or evidence cannot be read completely within the resource budget.
+Initial evidence is already supplied: use its physical IDs and complete delivered rule sections.
+Fetch omitted rules with get_rules(scope="business" or "split", query=section title).
+Do not repeat schema/rule discovery already supplied. Parameterize SQL filter values when useful.
 """
 
 
@@ -48,6 +54,7 @@ class SolveResult:
     output_tokens: int
     requests: int
     tool_events: list | None = None
+    evidence_ids: list | None = None
 
 
 def _scalar_evidence(answer, executions: list) -> bool:
@@ -94,15 +101,7 @@ def _cell_matches(actual, value) -> bool:
 
 
 def _error_code(error: Exception) -> str:
-    current = error
-    for _ in range(6):
-        if type(current).__name__ in {"BudgetExceeded", "ContextBudgetExceeded"}:
-            return type(current).__name__
-        if not current.__cause__:
-            break
-        current = current.__cause__
-    status = getattr(error, "status_code", None)
-    return f"{type(error).__name__}:{status}" if type(status) is int else type(error).__name__
+    return failure_code(error)
 
 
 async def solve_question(
@@ -115,6 +114,7 @@ async def solve_question(
     model_settings: dict | None = None,
     total_token_budget: int = 24000,
     tool_call_limit: int = 16,
+    context_packet_bytes: int = 8000,
 ) -> SolveResult:
     started = time.monotonic()
     agent = Agent(
@@ -125,11 +125,20 @@ async def solve_question(
         tool_timeout=20,
     )
     tool_events = []
+    payload = question.model_dump(mode="json", include={"question", "as_of_date"})
+    if context_packet_bytes:
+        packet, delivered = build_context(
+            tools.catalog, question.question, byte_limit=context_packet_bytes
+        )
+        payload["evidence"] = packet
+        tools.rule_ids_read.update(delivered)
+        tools.rules_read.update(rule["source"] for rule in packet["rules"])
 
     def recoverable(function):
         @wraps(function)
         def invoke(*args, **kwargs):
             started = time.monotonic()
+            before_queries = len(tools.executions)
             event = {
                 "tool_name": function.__name__,
                 "error_code": None,
@@ -139,6 +148,8 @@ async def solve_question(
                     ).encode()
                 ).hexdigest(),
             }
+            if function.__name__ == "execute_sql":
+                event["sql"] = kwargs.get("sql", args[0] if args else None)
             try:
                 output = function(*args, **kwargs)
                 if isinstance(output, dict):
@@ -148,14 +159,17 @@ async def solve_question(
                 return output
             except (ValueError, TimeoutError, EOFError) as error:
                 event["error_code"] = type(error).__name__
-                raise ModelRetry(
-                    f"{type(error).__name__}: invalid or timed-out tool request."
-                ) from error
+                raise ModelRetry(safe_tool_feedback(error)) from error
             except Exception as error:
                 event["error_code"] = type(error).__name__
                 raise
             finally:
+                if len(tools.executions) > before_queries:
+                    event["sql"] = tools.executions[-1]["sql"]
+                if event.get("sql") and len(event["sql"]) > 20000:
+                    event.pop("sql")
                 event["elapsed_ms"] = (time.monotonic() - started) * 1000
+                event["timestamp"] = datetime.now(UTC)
                 tool_events.append(event)
 
         return invoke
@@ -206,10 +220,24 @@ async def solve_question(
         return output
 
     usage = RunUsage()
+
+    def evidence_ids():
+        queries = {
+            "query:"
+            + hashlib.sha256(
+                json.dumps(
+                    {"sql": run["sql"], "parameters": run.get("parameters", [])}, sort_keys=True
+                ).encode()
+            ).hexdigest()
+            for run in tools.executions
+            if run.get("business_data") and "error" not in run["result"]
+        }
+        return sorted(tools.rule_ids_read | queries)
+
     try:
         result = await asyncio.wait_for(
             agent.run(
-                question.model_dump_json(include={"question", "as_of_date"}),
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
                 usage_limits=UsageLimits(
                     request_limit=max_requests,
                     tool_calls_limit=tool_call_limit,
@@ -229,6 +257,7 @@ async def solve_question(
             usage.output_tokens,
             usage.requests,
             tool_events,
+            evidence_ids(),
         )
     except Exception as error:
         return SolveResult(
@@ -240,4 +269,5 @@ async def solve_question(
             usage.output_tokens,
             usage.requests,
             tool_events,
+            evidence_ids(),
         )

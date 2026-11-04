@@ -73,8 +73,10 @@ text, as_of_date, and tools bound to the selected business. Strict output functi
 bind IDs and answer types in code; final records use the official submission models.
 Output is progressive, fsynced `submission.jsonl`, typed `traces.jsonl`, `run.json`,
 and observed Stage 1 `metadata.json` when a Git revision is available. Files stay
-outside the source split. Traces retain digests and bounded metadata rather than raw
-tool rows or credentials. Protect the output directory with host permissions;
+outside the source split. Traces retain argument digests, bounded SQL text, actual
+tool completion times and evidence IDs; raw tool rows, bound parameter values and
+credentials are excluded. SQL literals and final answers may contain source data.
+Protect the output directory with host permissions;
 Unix mode 0600 does not establish a Windows per-user ACL.
 
 Each question has request/tool/token/deadline limits; each SQL query has AST source
@@ -82,6 +84,10 @@ and function allowlists, a read-only restricted DuckDB worker, memory/time/row/b
 limits. This is defense in depth, not a separately qualified OS sandbox. Successful
 business queries and exact output evidence are required; verification cannot prove
 that every business rule or generated query interpretation is correct.
+An 8,000-byte deterministic initial evidence packet supplies whole small business
+notes, compact relevant schema and source-linked split rules/index. Omissions are
+explicit; use scoped rule lookup for needed sections. This reduces discovery
+requests while retaining the same context, generation and API budgets.
 
 Request accounting is persisted in `state/nim_accounting.sqlite` by default. Every
 HTTP attempt, including retries, counts. Defaults are 25 RPM, 1,200 requests per UTC

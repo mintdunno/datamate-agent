@@ -4,6 +4,7 @@ import json
 import multiprocessing as mp
 import time
 from pathlib import Path
+from typing import Literal
 
 import duckdb
 import sqlglot
@@ -150,6 +151,7 @@ class StructuredTools:
         self.tables = {table["table_id"] for table in catalog["tables"]} | {"calendar_data"}
         self.executions = []
         self.rules_read = set()
+        self.rule_ids_read = set()
 
     def list_tables(self) -> list[dict]:
         """List business source tables and SQL IDs; the calendar table is calendar_data."""
@@ -181,6 +183,9 @@ class StructuredTools:
                     "policy": table.get("policy"),
                     "source": table.get("source"),
                     "header_inferred": table.get("header_inferred"),
+                    "provenance_columns": ["_source_row_id", "_source_row"]
+                    if "fingerprint" in self.catalog
+                    else [],
                 }
         raise ValueError("unknown table")
 
@@ -274,7 +279,14 @@ class StructuredTools:
             [query],
         )
 
-    def get_rules(self, query: str = "", offset: int = 0, limit: int = 3) -> dict:
+    def get_rules(
+        self,
+        query: str = "",
+        offset: int = 0,
+        limit: int = 3,
+        scope: Literal["all", "split", "business"] = "all",
+        source: str = "",
+    ) -> dict:
         """Read whole source-linked rule sections. Page until applicable rules are complete.
 
         Query ranks sections, including business READMEs; no query preserves source order.
@@ -283,6 +295,16 @@ class StructuredTools:
         if offset < 0 or not 1 <= limit <= 10:
             raise ValueError("invalid rule page")
         entries = self.catalog["rules"]
+        if scope not in {"all", "split", "business"}:
+            raise ValueError("invalid rule scope")
+        if scope != "all":
+            entries = [
+                entry
+                for entry in entries
+                if (entry["source"] == "rulebook.md") == (scope == "split")
+            ]
+        if source:
+            entries = [entry for entry in entries if entry["source"] == source]
         if query:
             entries = sorted(
                 entries,
@@ -303,10 +325,22 @@ class StructuredTools:
                     }
                 break
             result.append(
-                {key: entry[key] for key in ("rule_id", "source", "line_start", "line_end", "text")}
+                {
+                    key: entry[key]
+                    for key in (
+                        "rule_id",
+                        "source",
+                        "source_sha256",
+                        "line_start",
+                        "line_end",
+                        "text",
+                    )
+                    if key in entry
+                }
             )
             remaining -= len(text.encode())
             self.rules_read.add(entry["source"])
+            self.rule_ids_read.add(entry["rule_id"])
             next_offset += 1
         return {
             "entries": result,

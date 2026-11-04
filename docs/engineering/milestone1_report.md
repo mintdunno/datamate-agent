@@ -45,7 +45,19 @@ is heuristic, not human qualification. The earlier draft suite was never evaluat
 Saved solver snapshots contain question/source hashes only; the evaluator manifest
 and reference metadata do not enter solving.
 
-Baseline/final training metrics and optimization decisions: **pending bounded runs**.
+Pre-improvement smoke baseline at `fd2212d`: **0 correct, 0 wrong, 12 abstain**,
+provisional PA 0.0, no invalid/unresolved records. Runtime 447.80 seconds, mean37.32,
+p9547.51 seconds; 12 invoked-tool errors. Failure categories: 7 model-behavior/output
+validation failures and 5 cumulative-token limit failures. It consumed **71 HTTP
+attempts, 214,119 input tokens and 36,239 output tokens**; every response reported usage.
+
+Optimization round 1: a bounded deterministic initial evidence packet, scope/source
+rule lookup and safe SQL feedback. Read-only triage directly established 24,586
+cumulative tokens in one failed case, mixed rule paging and missing rule/SQL evidence
+in early failures. This changes no model, thinking, sampling or resource budget.
+All 308 deterministic tests pass (19.53s). The broad development run is deferred until
+this execution blocker is checked, avoiding repetition of the already observed failure.
+Comparable smoke verification and subsequent fixed/holdout metrics are pending.
 No full 3,000-question evaluation has run. Defaults remain 25 RPM, 1,200 requests
 per UTC day and 300 per experiment; no budget was increased.
 

@@ -67,6 +67,17 @@ def _trace(stream, event) -> None:
 
 
 def _error_category(name: str) -> str:
+    if name in {
+        "business_data_query_required",
+        "exact_scalar_answer_required",
+        "split_business_rules_required",
+        "question_id_mismatch",
+        "output_retry_exhausted",
+        "tool_retry_exhausted",
+    }:
+        return name
+    if name.startswith("ModelHTTPError:"):
+        return "model_http_error_" + name.split(":", 1)[1]
     categories = {
         "BudgetExceeded": "budget_exhausted",
         "TimeoutError": "timeout",
@@ -134,7 +145,10 @@ async def run_batch(
     allow_large: bool = False,
     expected_sources: dict | None = None,
     normalization_plans: PreparationPlans | None = None,
+    context_packet_bytes: int = 8000,
 ) -> dict:
+    if context_packet_bytes != 0 and not 1000 <= context_packet_bytes <= 16000:
+        raise ValueError("context packet bytes must be zero or 1000..16000")
     if (
         not questions
         or max_questions < 1
@@ -192,6 +206,7 @@ async def run_batch(
         "deadline": deadline,
         "max_questions": max_questions,
         "allow_large": allow_large,
+        "context_packet_bytes": context_packet_bytes,
         "normalization_plans": normalization_plans.model_dump(mode="json")
         if normalization_plans
         else {},
@@ -336,6 +351,7 @@ async def run_batch(
                     model_settings=settings,
                     total_token_budget=getattr(profile, "question_token_budget", 24000),
                     tool_call_limit=getattr(profile, "tool_call_limit", 16),
+                    context_packet_bytes=context_packet_bytes,
                 )
                 answer = parse_submission(result.answer)
                 if answer.id != question.id:
@@ -369,8 +385,9 @@ async def run_batch(
                         event="tool_finished",
                         run_id=budget.run_id,
                         question_id=question.id,
-                        timestamp=datetime.now(UTC),
+                        timestamp=execution.get("timestamp", datetime.now(UTC)),
                         tool_name=execution.get("tool_name", "execute_sql"),
+                        sql=execution.get("sql") if events is not None else None,
                         elapsed_ms=execution.get("elapsed_ms", 0),
                         succeeded=not failed,
                         arguments_sha256=execution.get("arguments_sha256")
@@ -403,6 +420,7 @@ async def run_batch(
                     status="failed" if error else "answered",
                     elapsed_ms=elapsed * 1000,
                     final_answer=answer,
+                    evidence_ids=getattr(result, "evidence_ids", None) or [],
                     usage=usage,
                     error_code=error,
                 ),
