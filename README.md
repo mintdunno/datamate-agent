@@ -3,8 +3,9 @@
 An offline-first Vietnamese structured-data QA harness. Development follows
 [AGENTS.md](AGENTS.md); competition sources are indexed in [docs/README.md](docs/README.md).
 
-Stage 1 implements contracts, partial evaluation, and structured tracing. Data ingestion, SQL tools,
-PydanticAI/NVIDIA NIM integration, and training evaluation are not implemented yet.
+Stages 1–2 implement contracts, partial evaluation, structured tracing, and deterministic
+CSV/Excel/SQLite preparation into DuckDB with provenance and content-addressed caching.
+Agent SQL tools, PydanticAI/NVIDIA NIM integration, and training evaluation are not implemented yet.
 Unrestricted Python execution is outside v0.1 scope.
 
 ## Development
@@ -35,3 +36,15 @@ and [trace/run contracts and Stage 2 handoff](docs/engineering/stage1_contracts.
 The scorer deliberately reports unsupported matching cases as unresolved and emits
 only a **provisional** PA when the entire batch is resolved. It does not reproduce
 an independently verified official PA formula.
+
+## Data preparation
+
+~~~powershell
+uv run --locked python -m datamate.preparation --split-root datasets/train --split-id train --business-id YOUR_BUSINESS --cache-root state/prepared
+~~~
+
+The CLI processes all records for that business and prints metadata only. It never
+opens questions, references, or .env. For explicit normalization, provide --plans
+with table-key -> TablePlan JSON and current source-evidence fingerprints.
+See [Stage 2 preparation](docs/engineering/stage2_data_preparation.md) for contracts,
+provenance queries, cache behavior, and limitations.
