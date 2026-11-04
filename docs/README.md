@@ -29,6 +29,9 @@
 ## 3. Những điểm quan trọng cần chú ý
 
 1. **Scoring formula / matching rules chưa đầy đủ** do nội dung Evaluation bị mất đoạn khi copy (nhiều khả năng phần công thức/render). Không được viết scorer và khẳng định tương thích chính thức cho đến khi xác minh.
+   **Stage 1 clarification:** train rulebook §§7, 9 đã cung cấp nhiều format,
+   matching rules và outcome points. Xem [Evaluation foundation](engineering/evaluation_foundation.md)
+   để phân biệt semantics đã có nguồn với các khoảng trống còn unresolved.
 2. **Mâu thuẫn giờ release private test:** Submission Guidance do người dùng cung cấp nêu **09:00, 20/11/2026**; homepage Zalo nêu **11:00, 20/11/2026**. Giữ nguyên cả hai nguồn và xác nhận lại trên portal; không tùy tiện chọn một.
 3. **Separate Docker guideline chưa có**. Các chi tiết như base image và lệnh build phải lấy từ guideline này, không tự nhận là yêu cầu official.
 4. **Sơ đồ “Splits” trong Data tab là ảnh** và không được cung cấp; không suy diễn số lượng split/business/questions từ ảnh.
