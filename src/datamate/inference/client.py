@@ -88,7 +88,8 @@ async def inference_model(
             supports_json_object_output=False,
             openai_supports_strict_tool_definition=False,
             supports_forced_tool_choice=False,
-            openai_chat_supports_max_completion_tokens=False,
+            openai_chat_supports_max_completion_tokens=profile.max_tokens_field
+            == "max_completion_tokens",
             openai_chat_send_back_thinking_parts=False,
         )
         yield OpenAIChatModel(

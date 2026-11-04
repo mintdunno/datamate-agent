@@ -1,0 +1,5 @@
+# Optional Linux/WSL serving environment, separate from the core uv environment.
+# Compatibility floors from the Ornith-1.5-9B card; not a qualified runtime lock.
+# Pin exact tested wheels/CUDA build or image digest before qualification.
+vllm>=0.19.1
+transformers>=5.8.1

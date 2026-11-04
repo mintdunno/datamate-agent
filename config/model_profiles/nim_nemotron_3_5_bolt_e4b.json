@@ -1,0 +1,21 @@
+{
+  "name": "nim-nemotron-3.5-bolt-e4b-development",
+  "model_id": "nvidia/nemotron-3.5-bolt-e4b",
+  "base_url": "https://integrate.api.nvidia.com/v1",
+  "api_key_env": "LLM_API_KEY",
+  "revision": null,
+  "runtime": "nim",
+  "context_window": 32768,
+  "input_byte_limit": 24000,
+  "max_tokens": 1024,
+  "temperature": 1.0,
+  "top_p": 0.95,
+  "extra_body": {"chat_template_kwargs": {"enable_thinking": true}},
+  "native_tools": true,
+  "quantization": null,
+  "minimum_vram_gib": null,
+  "tool_parser": null,
+  "reasoning_parser": null,
+  "qualification": "unverified",
+  "eligibility": "development_only; cloud_API; released_2026-10-23_after_cutoff"
+}

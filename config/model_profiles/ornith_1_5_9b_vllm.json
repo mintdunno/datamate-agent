@@ -1,0 +1,22 @@
+{
+  "name": "ornith-1.5-9b-vllm-bf16",
+  "model_id": "ornith-ai/Ornith-1.5-9B",
+  "base_url": "http://127.0.0.1:8000/v1",
+  "api_key_env": "LOCAL_LLM_API_KEY",
+  "revision": "489cb97981b8654bcfcf30ce1f94ed1b62e07b53",
+  "runtime": "vllm",
+  "context_window": 32768,
+  "input_byte_limit": 24000,
+  "max_tokens": 1024,
+  "temperature": 0.6,
+  "top_p": 0.95,
+  "extra_body": {},
+  "native_tools": true,
+  "quantization": null,
+  "minimum_vram_gib": 24.0,
+  "tool_parser": "qwen3_xml",
+  "reasoning_parser": "qwen3",
+  "qualification": "unverified",
+  "eligibility": "conditional; pre_cutoff_revision; MIT; verify_total_parameter_budget",
+  "dtype": "bfloat16"
+}

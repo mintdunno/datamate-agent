@@ -1,0 +1,26 @@
+{
+  "name": "qwen3-14b-vllm-bf16",
+  "model_id": "Qwen/Qwen3-14B",
+  "base_url": "http://127.0.0.1:8000/v1",
+  "api_key_env": "LOCAL_LLM_API_KEY",
+  "revision": "40c069824f4251a91eefaf281ebe4c544efd3e18",
+  "runtime": "vllm",
+  "context_window": 32768,
+  "input_byte_limit": 24000,
+  "max_tokens": 1024,
+  "temperature": 0.6,
+  "top_p": 0.95,
+  "extra_body": {
+    "chat_template_kwargs": {
+      "enable_thinking": true
+    }
+  },
+  "native_tools": true,
+  "quantization": null,
+  "minimum_vram_gib": 34.0,
+  "tool_parser": "hermes",
+  "reasoning_parser": "qwen3",
+  "qualification": "unverified",
+  "eligibility": "conditional; pre_cutoff_revision; Apache-2.0; verify_total_parameter_budget",
+  "dtype": "bfloat16"
+}

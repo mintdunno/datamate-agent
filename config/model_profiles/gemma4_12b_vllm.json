@@ -1,0 +1,27 @@
+{
+  "name": "gemma4-12b-vllm-bf16",
+  "model_id": "google/gemma-4-12B-it",
+  "base_url": "http://127.0.0.1:8000/v1",
+  "api_key_env": "LOCAL_LLM_API_KEY",
+  "revision": "707f0a3b8a3c7ad586ed01e27eafbad8a27dd0f7",
+  "runtime": "vllm",
+  "context_window": 32768,
+  "input_byte_limit": 24000,
+  "max_tokens": 1024,
+  "temperature": 1.0,
+  "top_p": 0.95,
+  "extra_body": {
+    "chat_template_kwargs": {
+      "enable_thinking": true
+    }
+  },
+  "native_tools": true,
+  "quantization": null,
+  "minimum_vram_gib": 28.0,
+  "tool_parser": "gemma4",
+  "reasoning_parser": "gemma4",
+  "qualification": "unverified",
+  "eligibility": "conditional; pre_cutoff_revision; Apache-2.0; verify_total_parameter_budget",
+  "dtype": "bfloat16",
+  "gpu_memory_utilization": 0.9
+}
