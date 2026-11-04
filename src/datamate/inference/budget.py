@@ -43,6 +43,10 @@ class RequestBudget:
                     run_id TEXT NOT NULL, at REAL NOT NULL,
                     input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS response_metadata (
+                    run_id TEXT NOT NULL, at REAL NOT NULL, status INTEGER NOT NULL,
+                    finish_reason TEXT NOT NULL
+                );
             """)
 
     def _connect(self, *, timeout: float = 5) -> sqlite3.Connection:
@@ -97,6 +101,15 @@ class RequestBudget:
                 (self.run_id, time.time(), input_tokens, output_tokens),
             )
 
+    def record_response(self, status: int, finish_reason: str | None) -> None:
+        allowed = {"stop", "length", "tool_calls", "function_call", "content_filter"}
+        finish = finish_reason if finish_reason in allowed else "not_provided"
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO response_metadata VALUES(?,?,?,?)",
+                (self.run_id, time.time(), status, finish),
+            )
+
     def snapshot(self) -> dict:
         now = time.time()
         start = self._day_start(now)
@@ -120,6 +133,13 @@ class RequestBudget:
             usage_responses = db.execute(
                 "SELECT COUNT(*) FROM usage WHERE run_id=?", (self.run_id,)
             ).fetchone()[0]
+            finishes = dict(
+                db.execute(
+                    "SELECT finish_reason,COUNT(*) FROM response_metadata "
+                    "WHERE run_id=? GROUP BY finish_reason",
+                    (self.run_id,),
+                )
+            )
         return {
             "day_attempts": day_attempts,
             "run_attempts": run_attempts,
@@ -128,6 +148,8 @@ class RequestBudget:
             "run_input_tokens": run_usage[0],
             "run_output_tokens": run_usage[1],
             "run_usage_responses": usage_responses,
+            "finish_reasons": finishes,
+            "response_metadata_complete": sum(finishes.values()) == run_attempts,
             "token_usage_status": "reported_complete"
             if usage_responses == run_attempts
             else "partial_or_unavailable",
@@ -170,13 +192,21 @@ class BudgetTransport(httpx.AsyncBaseTransport):
                 await asyncio.sleep(min(2**attempt, 10))
                 continue
             await response.aread()
+            finish = None
             try:
-                usage = json.loads(response.content).get("usage", {})
+                data = json.loads(response.content)
+                usage = data.get("usage", {})
                 tokens = usage.get("prompt_tokens"), usage.get("completion_tokens")
                 if all(type(value) is int and value >= 0 for value in tokens):
                     self.budget.record_usage(*tokens)
+                choices = data.get("choices", [])
+                if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+                    finish = choices[0].get("finish_reason")
             except (ValueError, AttributeError, TypeError):
                 pass
+            self.budget.record_response(
+                response.status_code, finish if isinstance(finish, str) else None
+            )
             if (
                 response.status_code not in (408, 429, 500, 502, 503, 504)
                 or attempt == self.max_retries

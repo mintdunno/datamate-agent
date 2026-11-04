@@ -58,6 +58,18 @@ in early failures. This changes no model, thinking, sampling or resource budget.
 All 308 deterministic tests pass (19.53s). The broad development run is deferred until
 this execution blocker is checked, avoiding repetition of the already observed failure.
 Comparable smoke verification and subsequent fixed/holdout metrics are pending.
+Round 1 verification: 0 correct, 1 wrong, 11 abstain; provisional PA -0.0833.
+It used 32 requests / 173,989 input / 23,775 output tokens in 369.79 seconds,
+with two tool errors. This is a resource improvement, **not an accepted quality
+improvement**. Five one-request failures each consumed exactly1,024 output tokens.
+The sole unanswerable prediction was wrong; no claim of successful absence verification.
+
+Qualification round 2 explicitly selects `config/experiments/nim_reasoning_2k.json`:
+same model/backend/thinking/sampling and 24k total-token budget per question, with
+2,048 output tokens instead of1,024. Request/day/run/context limits are unchanged.
+Generation-budget differences preclude treating this as a pure harness comparison.
+SQL lexer failures now produce bounded repair feedback; finish reasons are recorded
+without response text, headers or credentials. Qualification results are pending.
 No full 3,000-question evaluation has run. Defaults remain 25 RPM, 1,200 requests
 per UTC day and 300 per experiment; no budget was increased.
 

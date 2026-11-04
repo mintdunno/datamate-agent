@@ -65,6 +65,13 @@ SAFE_FUNCTIONS = {
 
 
 def validate_sql(sql: str, tables: set[str]) -> str:
+    try:
+        return _validated_select(sql, tables)
+    except sqlglot.errors.SqlglotError as error:
+        raise ValueError("invalid SQL") from error
+
+
+def _validated_select(sql: str, tables: set[str]) -> str:
     if len(sql) > 20000:
         raise ValueError("SQL exceeds length limit")
     try:

@@ -56,6 +56,8 @@ def test_factory_uses_selected_model_and_accounts_provider_usage(tmp_path):
     assert budget.snapshot()["run_attempts"] == 1
     assert budget.snapshot()["run_input_tokens"] == 11
     assert budget.snapshot()["run_output_tokens"] == 2
+    assert budget.snapshot()["finish_reasons"] == {"stop": 1}
+    assert budget.snapshot()["response_metadata_complete"]
 
 
 def test_context_guard_rejects_before_network(tmp_path):

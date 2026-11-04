@@ -22,6 +22,7 @@ from datamate.runtime.tools import StructuredTools, validate_sql
         "SELECT * FROM (UNPIVOT raw_records ON x,y INTO NAME key VALUE val)",
         "SELECT * FROM (SUMMARIZE raw_records)",
         "SELECT * FROM (DESCRIBE raw_records)",
+        "SELECT 'unterminated",
     ],
 )
 def test_sql_rejects_unsafe_statements_and_sources(sql):
