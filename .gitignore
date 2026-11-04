@@ -1,4 +1,26 @@
-# Data Folder
-train
-datasets
+# Source datasets and secrets
+/datasets/
+/train/
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*.json
+
+# Generated state, local environments, and tooling caches
+/state/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+/build/
+/dist/
+*.duckdb
+*.duckdb.wal
+
+# docs/ is intentionally version controlled.
