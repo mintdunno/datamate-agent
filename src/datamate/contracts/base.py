@@ -28,6 +28,7 @@ def nonblank(value: str) -> str:
 
 
 NonblankString = Annotated[str, StringConstraints(strict=True), AfterValidator(nonblank)]
+Sha256 = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
 
 
 def validate_day(value: str) -> str:

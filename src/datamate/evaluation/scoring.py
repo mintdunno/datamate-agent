@@ -1,15 +1,14 @@
 """Per-question outcomes distinguish confirmed rules from unresolved specifications."""
 
-from typing import Annotated, Literal, Self
+from typing import Literal, Self
 
-from pydantic import StringConstraints, ValidationError, model_validator
+from pydantic import ValidationError, model_validator
 
 from datamate.contracts.answers import parse_submission
-from datamate.contracts.base import ContractModel, NonblankString
+from datamate.contracts.base import ContractModel, NonblankString, Sha256
 from datamate.evaluation.matching import match_train_value
 from datamate.evaluation.references import ReferenceAnswer
 
-Sha256 = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
 Outcome = Literal["correct", "wrong", "abstain"]
 TRAIN_V1_RULEBOOK_SHA256 = "740267bccba29df70f745bc39968bbec5b3e62dada2c858c45314f3ec723d113"
 
