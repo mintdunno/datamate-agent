@@ -8,7 +8,12 @@ version = "0.1.0"
 description = "Offline-first contracts and evaluation foundation for DataMate"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = ["pydantic>=2.12,<3"]
+dependencies = [
+    "duckdb>=1.4,<3",
+    "openpyxl>=3.1,<4",
+    "polars>=1.30,<2",
+    "pydantic>=2.12,<3",
+]
 
 [dependency-groups]
 dev = ["pytest>=8.4,<10", "ruff>=0.14,<1"]
