@@ -13,6 +13,10 @@ not that kernels, chat templates, tool calls, or model quality have been qualifi
 All profiles use the same harness/provider boundary. Select a JSON with `--profile`;
 there is no model-specific agent implementation. Every profile deliberately limits
 operation to 32,768 context tokens, 24,000 input bytes, and 1,024 generated tokens.
+An explicit NIM qualification profile in `config/experiments/nim_reasoning_2k.json`
+selects 2,048 output tokens; no length finish reason was reported in qualification.
+No aggregate
+question-token/request/context limit or thinking mode was changed.
 These are harness budgets, not the models' advertised context capacities. Thinking
 can consume the output budget before an answer appears; record truncations and
 qualify a larger budget explicitly when needed.

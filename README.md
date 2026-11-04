@@ -64,7 +64,7 @@ holdout 72. Seed, question IDs, coverage and all source hashes are saved under s
 
 ```bash
 uv run --locked python -m datamate suites --split-root datasets/train --output-dir state/suites/m1
-uv run --locked python -m datamate run --profile config/model_profiles/nim_nemotron_3_5_bolt_e4b.json --suite state/suites/m1/smoke.jsonl --split-root datasets/train --state-root state/prepared --output-dir state/runs/nim-smoke --env-file .env
+uv run --locked python -m datamate run --profile config/experiments/nim_reasoning_2k.json --suite state/suites/m1/smoke.jsonl --split-root datasets/train --state-root state/prepared --output-dir state/runs/nim-smoke --env-file .env
 uv run --locked python -m datamate report --suite state/suites/m1/smoke.jsonl --references datasets/train/answers.jsonl --rulebook datasets/train/rulebook.md --run-dir state/runs/nim-smoke --scoring-profile train_rulebook_v1
 ```
 
@@ -87,15 +87,20 @@ that every business rule or generated query interpretation is correct.
 Automatic context preloading was removed after two bounded smoke qualifications
 failed to improve correctness. The model discovers schemas and reads scoped rules
 through tools. SQL recovery, source-linked evidence and response-finish diagnostics
-remain. The explicit 2,048-output-token NIM experiment profile avoids observed
-1,024-token clipping; it does not change thinking mode or total question budgets.
+remain. The explicit 2,048-output-token NIM experiment profile was tested after
+repeated failures at the 1,024-token output cap. It does not change thinking mode
+or total question budgets.
+The 1,024-token base profile is retained for baseline reproduction. Neither profile
+has met the training quality gate; use the evidence report before planning more API runs.
 
 Request accounting is persisted in `state/nim_accounting.sqlite` by default. Every
 HTTP attempt, including retries, counts. Defaults are 25 RPM, 1,200 requests per UTC
 day and 300 per experiment. SDK retries are disabled; bounded transport backoff
 honors Retry-After. Provider-reported usage is retained even when output validation
 fails; absent usage is explicitly incomplete. Configure limits with CLI options;
-generation/context/tool budgets live in model profiles. Do not raise budgets merely
+generation/context/tool budgets live in model profiles. The PydanticAI cumulative
+token threshold is checked between requests and can overshoot on the last exchange;
+HTTP attempt caps remain strict. Do not raise budgets merely
 to continue tuning. No prediction cache is shared between runs.
 
 Explicit `--resume` requires matching inputs, profile, implementation, dependencies,
