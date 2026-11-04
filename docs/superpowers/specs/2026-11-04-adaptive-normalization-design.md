@@ -1,8 +1,8 @@
 # New Milestone 1 — Evidence-Guided Adaptive Normalization
 
-Status: DRAFT FOR USER APPROVAL. Date: 2026-11-04.
-This is the consolidated design and execution roadmap. It is not the approved
-file-by-file implementation plan. No product code has been changed by this work.
+Status: APPROVED by the user ("ok duyệt"), 2026-11-04.
+This is the approved design and execution roadmap. The file-by-file implementation
+plan is a separate artifact. No product code has been changed by this document.
 
 ## 1. Intent and accepted decisions
 
@@ -493,6 +493,6 @@ User-supplied documents at design time (preserved without modification):
 - NORMALIZATION_SPEC.md SHA256 c5b6a1712ab5ad693fcfad7e65f33148d189d4cfc48f54a476f25665ec7c0aac
 - ERROR_CATALOG.md SHA256 afc81cfee4925f0c663ea48ec2f4e1c3cb4e166b817c486bf3438244dce7fea4
 
-The user has selected the approach/evaluation method, not yet approved this written
-design. P0 will reconcile normative changes explicitly instead of silently editing
-these input sources during planning.
+The user selected the approach/evaluation method and subsequently approved this
+written design with "ok duyệt". P0 will reconcile normative changes explicitly
+instead of silently editing these input sources during planning.
