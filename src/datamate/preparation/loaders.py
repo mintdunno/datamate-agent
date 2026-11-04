@@ -131,6 +131,8 @@ def _quote_identifier(name: str) -> str:
 
 
 def _sqlite_tables(path: Path) -> Iterator[SourceTable]:
+    if any(path.with_name(path.name + suffix).exists() for suffix in ("-wal", "-journal")):
+        raise ValueError("SQLite requires a checkpointed, journal-free source snapshot")
     connection = sqlite3.connect(path.resolve().as_uri() + "?mode=ro&immutable=1", uri=True)
     try:
         connection.execute("PRAGMA query_only = ON")
@@ -163,15 +165,28 @@ def _sqlite_tables(path: Path) -> Iterator[SourceTable]:
                 primary = sorted((c for c in columns if c[5]), key=lambda c: c[5])
                 # All columns provide a deterministic fallback if rowid is shadowed.
                 order = ", ".join(_quote_identifier(c[1]) for c in (primary or columns))
-            cursor = connection.execute(f"SELECT * FROM {identifier} ORDER BY {order}")
+            native_rowid = rowid if rowid and not without_rowid else None
+            primary = sorted((c for c in columns if c[5]), key=lambda c: c[5])
+            prefix = f"{native_rowid}, " if native_rowid else ""
+            cursor = connection.execute(f"SELECT {prefix}* FROM {identifier} ORDER BY {order}")
 
-            def rows(cursor=cursor) -> Iterator[SourceRow]:
+            def rows(
+                cursor=cursor, native_rowid=native_rowid, primary=primary, headers=headers
+            ) -> Iterator[SourceRow]:
                 number = 0
                 while batch := cursor.fetchmany(512):
                     for record in batch:
                         number += 1
-                        yield SourceRow(number, tuple(record))
+                        values = tuple(record[1:]) if native_rowid else tuple(record)
+                        key = (
+                            {native_rowid: record[0]}
+                            if native_rowid
+                            else {column[1]: values[headers.index(column[1])] for column in primary}
+                        )
+                        yield SourceRow(number, values, record_key=key or None)
 
-            yield SourceTable(name, headers, None, rows())
+            yield SourceTable(
+                name, headers, None, rows(), declared_types=tuple(column[2] for column in columns)
+            )
     finally:
         connection.close()

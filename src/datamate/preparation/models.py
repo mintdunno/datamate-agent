@@ -14,6 +14,7 @@ class SourceRow:
     values: tuple[RawValue, ...]
     formulas: tuple[str | None, ...] = ()
     formats: tuple[str | None, ...] = ()
+    record_key: dict[str, RawValue] | None = None
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,7 @@ class SourceTable:
     header_row: int | None
     rows: Iterable[SourceRow]
     preamble: tuple[SourceRow, ...] = ()
+    declared_types: tuple[str | None, ...] = ()
 
 
 @dataclass(frozen=True)

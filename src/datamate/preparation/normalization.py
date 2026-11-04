@@ -196,7 +196,10 @@ def normalize_rows(rows: Iterable[SourceRow], width: int, plan: TablePlan) -> It
         group = None
         if group_index is not None:
             key = values[group_index]
-            if key is None or key == "":
+            unknown_key = bool(row.formulas and row.formulas[group_index] and key is None)
+            if unknown_key:
+                group = None
+            elif key is None or key == "":
                 group = previous_group
                 if group is not None:
                     values[group_index] = carried[group_index]
@@ -205,7 +208,14 @@ def normalize_rows(rows: Iterable[SourceRow], width: int, plan: TablePlan) -> It
                 group = json.dumps(encoded(key), sort_keys=True)
             if group != previous_group:
                 carried = {}
+            if group is None:
+                carried = {}
+                events.append({"column": columns[group_index], "code": "group_key_unresolved"})
             for index in [group_index, *fill_indices]:
+                if group is None or (
+                    row.formulas and row.formulas[index] and values[index] is None
+                ):
+                    continue
                 if index not in carried and group != previous_group:
                     carried[index] = values[index]
                 if values[index] is None or values[index] == "":
@@ -219,7 +229,9 @@ def normalize_rows(rows: Iterable[SourceRow], width: int, plan: TablePlan) -> It
         if plan.deduplicate_order_lines and group is not None:
             signature = hashlib.sha256(
                 json.dumps(
-                    [encoded(value) for value in row.values], ensure_ascii=False, sort_keys=True
+                    {"values": [encoded(value) for value in row.values], "formulas": row.formulas},
+                    ensure_ascii=False,
+                    sort_keys=True,
                 ).encode()
             ).hexdigest()
             duplicate_of = seen.get((group, signature))

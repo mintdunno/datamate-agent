@@ -118,3 +118,31 @@ def test_fill_uses_first_group_value_and_records_conflicting_values():
     assert result[2].values == ("A", "Lan")
     assert result[1].values == ("A", "Hoa")
     assert any(event["code"] == "group_conflict" for event in result[1].events)
+
+
+def test_different_formula_cells_are_not_exact_duplicates():
+    plan = TablePlan(group_key="c0001", deduplicate_order_lines=True, evidence=evidence())
+    rows = [
+        SourceRow(1, ("A", 2), formulas=(None, "=1+1")),
+        SourceRow(2, ("A", 2), formulas=(None, "=2*1")),
+    ]
+    assert not any(row.excluded for row in normalize_rows(rows, 2, plan))
+
+
+def test_uncached_formula_is_not_a_blank_group_field_or_order_key():
+    plan = TablePlan(group_key="c0001", fill_columns=["c0002"], evidence=evidence())
+    result = list(
+        normalize_rows(
+            [
+                SourceRow(1, ("A", "Lan")),
+                SourceRow(2, ("A", None), formulas=(None, '=CONCAT("H","oa")')),
+                SourceRow(3, (None, "Hoa"), formulas=('="B"', None)),
+                SourceRow(4, (None, None)),
+            ],
+            2,
+            plan,
+        )
+    )
+    assert result[1].values == ("A", None)
+    assert result[2].values == (None, "Hoa")
+    assert result[3].values == (None, None)

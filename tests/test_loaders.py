@@ -79,6 +79,31 @@ def test_unknown_suffix_is_rejected(tmp_path):
         list(load_tables(tmp_path / "x.txt"))
 
 
+def test_sqlite_preserves_sparse_native_rowids_and_composite_keys(tmp_path):
+    path = tmp_path / "keys.sqlite"
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE sparse(v TEXT)")
+        db.execute("INSERT INTO sparse(rowid,v) VALUES (101,'x'),(909,'y')")
+        db.execute("CREATE TABLE composite(a TEXT,b INTEGER,PRIMARY KEY(a,b)) WITHOUT ROWID")
+        db.execute("INSERT INTO composite VALUES ('key',7)")
+    found = {}
+    for table in load_tables(path):
+        found[table.name] = (table, list(table.rows))
+    assert found["sparse"][1][0].record_key == {"rowid": 101}
+    assert found["sparse"][1][1].record_key == {"rowid": 909}
+    assert found["composite"][1][0].record_key == {"a": "key", "b": 7}
+    assert found["composite"][0].declared_types == ("TEXT", "INTEGER")
+
+
+def test_sqlite_wal_snapshot_is_rejected_without_modifying_sources(tmp_path):
+    path = tmp_path / "wal.sqlite"
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE x(a INTEGER)")
+    path.with_name(path.name + "-wal").write_bytes(b"not-checkpointed")
+    with pytest.raises(ValueError, match="snapshot"):
+        list(load_tables(path))
+
+
 def test_sqlite_generated_columns_and_without_rowid_order(tmp_path):
     path = tmp_path / "generated.sqlite"
     con = sqlite3.connect(path)
