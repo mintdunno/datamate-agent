@@ -113,6 +113,8 @@ async def solve_question(
     deadline=120,
     max_requests=8,
     model_settings: dict | None = None,
+    total_token_budget: int = 24000,
+    tool_call_limit: int = 16,
 ) -> SolveResult:
     started = time.monotonic()
     agent = Agent(
@@ -209,7 +211,9 @@ async def solve_question(
             agent.run(
                 question.model_dump_json(include={"question", "as_of_date"}),
                 usage_limits=UsageLimits(
-                    request_limit=max_requests, tool_calls_limit=16, total_tokens_limit=24000
+                    request_limit=max_requests,
+                    tool_calls_limit=tool_call_limit,
+                    total_tokens_limit=total_token_budget,
                 ),
                 model_settings=model_settings,
                 usage=usage,

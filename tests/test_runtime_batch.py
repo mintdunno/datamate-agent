@@ -33,7 +33,7 @@ def setup(tmp_path, monkeypatch):
     )
     prepared = SimpleNamespace(database=tmp_path / "db", catalog={"tables": []}, fingerprint="abc")
     monkeypatch.setattr(batch, "prepare_business", lambda *args, **kwargs: prepared)
-    monkeypatch.setattr(batch, "StructuredTools", lambda *args: object())
+    monkeypatch.setattr(batch, "StructuredTools", lambda *args, **kwargs: object())
 
     async def solve(q, tools, model, **kwargs):
         return SimpleNamespace(
@@ -56,7 +56,7 @@ def test_run_progress_resume_and_config_change(setup):
     questions = [question("1"), question("2")]
     result = asyncio.run(batch.run_batch(questions, **setup))
     assert result["status"] == "completed"
-    lines = (setup["output_dir"] / "predictions.jsonl").read_text().splitlines()
+    lines = (setup["output_dir"] / "submission.jsonl").read_text().splitlines()
     assert [json.loads(line)["id"] for line in lines] == ["1", "2"]
     with pytest.raises(ValueError):
         asyncio.run(batch.run_batch(questions, **setup))
@@ -77,7 +77,7 @@ def test_failures_abstain_and_budget_stops_remaining(setup, monkeypatch):
     setup["budget"].run_limit = 1
     result = asyncio.run(batch.run_batch([question("1"), question("2")], **setup))
     assert result["status"] == "budget_exhausted"
-    assert len((setup["output_dir"] / "predictions.jsonl").read_text().splitlines()) == 1
+    assert len((setup["output_dir"] / "submission.jsonl").read_text().splitlines()) == 1
     assert "private secret" not in (setup["output_dir"] / "traces.jsonl").read_text()
 
 
@@ -116,3 +116,43 @@ def test_typed_trace_and_transport_usage_not_double_counted(setup, monkeypatch):
     assert events[-1].usage.input_tokens == 9
     assert "private" not in text and "secret" not in text
     assert result["tool_errors"] == 0
+
+
+def test_fixed_snapshot_rejects_data_drift_before_writes(setup):
+    with pytest.raises(ValueError, match="snapshot"):
+        asyncio.run(batch.run_batch([question("1")], **setup, expected_sources={"biz": {}}))
+    assert not setup["output_dir"].exists()
+    assert setup["budget"].snapshot()["run_attempts"] == 0
+
+
+def test_resume_binds_dependency_versions(setup, monkeypatch):
+    asyncio.run(batch.run_batch([question("1")], **setup))
+    monkeypatch.setattr(batch, "_dependencies", lambda: {"pydantic-ai-slim": "different"})
+    with pytest.raises(ValueError, match="resume"):
+        asyncio.run(batch.run_batch([question("1")], **setup, resume=True))
+
+
+def test_evidenced_normalization_plans_reach_preparation_and_bind_resume(setup, monkeypatch):
+    from datamate.preparation.normalization import TablePlan
+    from datamate.runtime.inputs import PreparationPlans
+
+    original = batch.prepare_business
+    received = []
+
+    def prepare(*args, **kwargs):
+        received.append(kwargs["plans"])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(batch, "prepare_business", prepare)
+    plans = PreparationPlans(businesses={"biz": {"data/biz/data.csv::data": TablePlan()}})
+    asyncio.run(batch.run_batch([question("1")], **setup, normalization_plans=plans))
+    assert isinstance(received[0]["data/biz/data.csv::data"], TablePlan)
+    with pytest.raises(ValueError, match="resume"):
+        asyncio.run(
+            batch.run_batch(
+                [question("1")],
+                **setup,
+                resume=True,
+                normalization_plans=PreparationPlans(businesses={}),
+            )
+        )

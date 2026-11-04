@@ -16,6 +16,7 @@ from datamate.inference.client import model_settings
 from datamate.observability import ModelUsage, QuestionFinished, QuestionStarted, ToolFinished
 from datamate.preparation.discovery import discover_business
 from datamate.preparation.pipeline import prepare_business
+from datamate.runtime.inputs import PreparationPlans
 from datamate.runtime.metadata import collect_metadata
 from datamate.runtime.solver import INSTRUCTIONS, solve_question
 from datamate.runtime.tools import StructuredTools
@@ -130,8 +131,16 @@ async def run_batch(
     max_questions: int = 100,
     resume: bool = False,
     inference_settings: dict | None = None,
+    allow_large: bool = False,
+    expected_sources: dict | None = None,
+    normalization_plans: PreparationPlans | None = None,
 ) -> dict:
-    if not questions or not 1 <= max_questions <= 500 or len(questions) > max_questions:
+    if (
+        not questions
+        or max_questions < 1
+        or (max_questions > 500 and not allow_large)
+        or len(questions) > max_questions
+    ):
         raise ValueError("question count exceeds configured limit (maximum 500)")
     if max_requests_per_question < 1 or deadline <= 0:
         raise ValueError("question request limit and deadline must be positive")
@@ -145,6 +154,8 @@ async def run_batch(
     if output_dir.is_relative_to(split_root) or state_root.is_relative_to(split_root):
         raise ValueError("outputs and state must be outside source split")
     sources = _sources(split_root, {q.business_id for q in questions}, split_id)
+    if expected_sources is not None and sources != expected_sources:
+        raise ValueError("source data differs from fixed suite snapshot")
     implementation = {
         str(path.relative_to(Path(__file__).parents[1])): hashlib.sha256(
             path.read_bytes()
@@ -180,6 +191,10 @@ async def run_batch(
         "max_requests_per_question": max_requests_per_question,
         "deadline": deadline,
         "max_questions": max_questions,
+        "allow_large": allow_large,
+        "normalization_plans": normalization_plans.model_dump(mode="json")
+        if normalization_plans
+        else {},
     }
     fingerprint = _hash(config)
     run_path = output_dir / "run.json"
@@ -195,7 +210,7 @@ async def run_batch(
     elif resume:
         raise ValueError("cannot resume without existing run metadata")
     output_dir.mkdir(parents=True, exist_ok=True)
-    prediction_path = output_dir / "predictions.jsonl"
+    prediction_path = output_dir / "submission.jsonl"
     done = _completed(prediction_path, questions) if resume else set()
     metadata = {
         "configuration_sha256": fingerprint,
@@ -205,6 +220,9 @@ async def run_batch(
             key: value for key, value in config["budget"].items() if key not in {"path", "run_id"}
         },
         "source_fingerprints": sources,
+        "data_snapshot_status": "verified"
+        if expected_sources is not None
+        else "unbound_custom_input",
         "artifact_fingerprints": old.get("artifact_fingerprints", {}),
         "profile": profile.model_dump(mode="json"),
         "run_id": budget.run_id,
@@ -218,6 +236,20 @@ async def run_batch(
         "platform": platform.platform(),
         "dependency_versions": dependencies,
     }
+    metadata["budget_policy"].update(
+        {
+            key: getattr(profile, key, None)
+            for key in (
+                "question_token_budget",
+                "tool_call_limit",
+                "sql_row_limit",
+                "sql_byte_limit",
+                "sql_timeout",
+                "input_byte_limit",
+                "max_tokens",
+            )
+        }
+    )
     _write_run(run_path, metadata)
     if not resume:
         observed = collect_metadata(
@@ -275,14 +307,26 @@ async def run_batch(
             try:
                 if question.business_id not in prepared:
                     prepared[question.business_id] = prepare_business(
-                        split_root, question.business_id, state_root, split_id=split_id
+                        split_root,
+                        question.business_id,
+                        state_root,
+                        split_id=split_id,
+                        plans=normalization_plans.businesses.get(question.business_id)
+                        if normalization_plans
+                        else None,
                     )
                 artifact = prepared[question.business_id]
                 previous = metadata["artifact_fingerprints"].get(question.business_id)
                 if previous is not None and previous != artifact.fingerprint:
                     raise _ArtifactChanged("prepared artifact changed")
                 metadata["artifact_fingerprints"][question.business_id] = artifact.fingerprint
-                tools = StructuredTools(artifact.database, artifact.catalog)
+                tools = StructuredTools(
+                    artifact.database,
+                    artifact.catalog,
+                    row_limit=getattr(profile, "sql_row_limit", 40),
+                    byte_limit=getattr(profile, "sql_byte_limit", 12000),
+                    timeout=getattr(profile, "sql_timeout", 15),
+                )
                 result = await solve_question(
                     question,
                     tools,
@@ -290,6 +334,8 @@ async def run_batch(
                     deadline=deadline,
                     max_requests=max_requests_per_question,
                     model_settings=settings,
+                    total_token_budget=getattr(profile, "question_token_budget", 24000),
+                    tool_call_limit=getattr(profile, "tool_call_limit", 16),
                 )
                 answer = parse_submission(result.answer)
                 if answer.id != question.id:

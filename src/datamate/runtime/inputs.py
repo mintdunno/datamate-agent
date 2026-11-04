@@ -3,7 +3,15 @@
 import json
 from pathlib import Path
 
+from datamate.contracts.base import ContractModel, NonblankString
 from datamate.contracts.inputs import Question
+from datamate.preparation.normalization import TablePlan
+
+
+class PreparationPlans(ContractModel):
+    """Evidence-bound preprocessing settings shared across every model in a comparison."""
+
+    businesses: dict[NonblankString, dict[NonblankString, TablePlan]]
 
 
 def _unique(pairs):
@@ -15,8 +23,8 @@ def _unique(pairs):
     return values
 
 
-def read_questions(path: Path, *, maximum: int = 100) -> list[Question]:
-    if not 1 <= maximum <= 500:
+def read_questions(path: Path, *, maximum: int = 100, allow_large: bool = False) -> list[Question]:
+    if maximum < 1 or (maximum > 500 and not allow_large):
         raise ValueError("evaluation size must be 1..500; full evaluation is not enabled")
     result, identifiers = [], set()
     with path.open(encoding="utf-8-sig") as stream:
