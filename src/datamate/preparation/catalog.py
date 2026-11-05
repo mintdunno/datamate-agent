@@ -1,9 +1,14 @@
 """Source-linked rule catalogs retain text as evidence, never executable instructions."""
 
 import hashlib
+import json
 import re
+import unicodedata
 from collections.abc import Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
+
+from rank_bm25 import BM25Okapi
+from rapidfuzz import fuzz
 
 from datamate.preparation.models import (
     ClauseDeclaration,
@@ -268,3 +273,96 @@ def resolve_declaration(
                 return None
             return candidates[0]
     return None
+
+
+TOKENIZER_VERSION = "unicode-nfkc-casefold-word-v1"
+RETRIEVAL_INDEX_VERSION = "bm25-okapi-rapidfuzz-partial-v1"
+_TOKEN_PATTERN = re.compile(r"\w+", re.UNICODE)
+_BM25_K1 = 1.5
+_BM25_B = 0.75
+_BM25_EPSILON = 0.25
+_FUZZY_CANDIDATE_THRESHOLD = 75.0
+
+
+@dataclass(frozen=True)
+class ClauseMatch:
+    """Ranked evidence candidate, without any semantic acceptance decision."""
+
+    clause: RuleClause
+    score: float
+    bm25_score: float
+    fuzzy_score: float
+    index_digest: str
+    tokenizer_version: str
+
+
+def _rule_tokens(text: str) -> list[str]:
+    normalized = unicodedata.normalize("NFKC", text).casefold()
+    return _TOKEN_PATTERN.findall(normalized)
+
+
+def _retrieval_index_digest(clauses: Sequence[RuleClause]) -> str:
+    settings = {
+        "tokenizer": TOKENIZER_VERSION,
+        "index": RETRIEVAL_INDEX_VERSION,
+        "bm25": {"k1": _BM25_K1, "b": _BM25_B, "epsilon": _BM25_EPSILON},
+        "fuzzy_candidate_threshold": _FUZZY_CANDIDATE_THRESHOLD,
+        "clauses": [
+            (clause.clause_id, clause.source_document.sha256, clause.quote_sha256)
+            for clause in clauses
+        ],
+    }
+    return hashlib.sha256(
+        json.dumps(settings, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+
+
+def retrieve_clauses(query: str, clauses: Sequence[RuleClause], *, limit: int) -> list[ClauseMatch]:
+    """Rank bounded lexical candidates; callers retain the complete clause ledger."""
+    if type(limit) is not int or not 1 <= limit <= 100:
+        raise ValueError("rule result limit must be an integer from 1..100")
+    query_tokens = _rule_tokens(query)
+    if not query_tokens or not clauses:
+        return []
+    ordered = sorted(
+        clauses,
+        key=lambda clause: (
+            clause.source_document.source,
+            clause.line_start,
+            clause.clause_id,
+        ),
+    )
+    corpus = [_rule_tokens(clause.quote) for clause in ordered]
+    if not any(corpus):
+        return []
+    index_digest = _retrieval_index_digest(ordered)
+    index = BM25Okapi(corpus, k1=_BM25_K1, b=_BM25_B, epsilon=_BM25_EPSILON)
+    scores = index.get_scores(query_tokens)
+    query_text = " ".join(query_tokens)
+    query_terms = set(query_tokens)
+    ranked = []
+    for clause, tokens, bm25_score in zip(ordered, corpus, scores, strict=True):
+        fuzzy_score = float(fuzz.partial_ratio(query_text, " ".join(tokens))) if tokens else 0.0
+        if not query_terms.intersection(tokens) and fuzzy_score < _FUZZY_CANDIDATE_THRESHOLD:
+            continue
+        lexical_score = max(0.0, float(bm25_score))
+        match = ClauseMatch(
+            clause=clause,
+            score=lexical_score + fuzzy_score / 100,
+            bm25_score=float(bm25_score),
+            fuzzy_score=fuzzy_score,
+            index_digest=index_digest,
+            tokenizer_version=TOKENIZER_VERSION,
+        )
+        ranked.append(match)
+    ranked.sort(
+        key=lambda match: (
+            -match.score,
+            match.clause.source_document.source,
+            match.clause.line_start,
+            match.clause.clause_id,
+        )
+    )
+    return ranked[:limit]

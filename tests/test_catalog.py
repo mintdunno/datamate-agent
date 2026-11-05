@@ -2,7 +2,7 @@
 
 import pytest
 
-from datamate.preparation.catalog import rule_entries, search_rules
+from datamate.preparation.catalog import compile_clauses, rule_entries, search_rules
 from datamate.preparation.discovery import sha256_file
 from datamate.preparation.models import SourceFile
 
@@ -112,3 +112,66 @@ def test_source_quote_hash_and_split_are_bound(tmp_path):
         )
     with pytest.raises(ValueError, match="rulebook"):
         compile_clauses((SourceFile(other_readme, "README.md", sha256_file(other_readme)),))
+
+
+def test_bm25_retrieval_is_deterministic_but_does_not_drop_unmatched_rules(tmp_path):
+    from datamate.preparation.catalog import retrieve_clauses
+
+    root = tmp_path / "train"
+    root.mkdir()
+    path = root / "rulebook.md"
+    path.write_text(
+        "# Rules\n"
+        "- Tổng doanh thu loại trả hàng.\n"
+        "- Tổng doanh thu loại trả hàng.\n"
+        "- Công nợ dùng ngày đến hạn.\n"
+        "- Unfamiliar generic accounting ritual remains normative.\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    clauses = compile_clauses((SourceFile(path, "rulebook.md", sha256_file(path)),))
+    first = retrieve_clauses("ＴỔＮＧ DOANH THU", clauses, limit=2)
+    second = retrieve_clauses("ＴỔＮＧ DOANH THU", tuple(reversed(clauses)), limit=2)
+
+    assert [match.clause.clause_id for match in first] == [
+        clauses[1].clause_id,
+        clauses[2].clause_id,
+    ]
+    assert [match.clause.clause_id for match in first] == [
+        match.clause.clause_id for match in second
+    ]
+    assert len(first) == 2
+    assert first[0].bm25_score > 0
+    assert first[0].fuzzy_score > 0
+    assert first[0].score > first[0].bm25_score
+    assert first[0].index_digest == second[0].index_digest
+    assert first[0].tokenizer_version == second[0].tokenizer_version
+    assert len(first[0].index_digest) == 64
+    assert len(clauses) == 5
+    assert clauses[-1].clause_id not in {match.clause.clause_id for match in first}
+    assert all(clause.status == "UNMAPPED" for clause in clauses[1:])
+    assert all(match.clause.declaration is None for match in first)
+
+
+def test_retrieval_index_digest_changes_with_source_and_limits_are_bounded(tmp_path):
+    from datamate.preparation.catalog import retrieve_clauses
+
+    root = tmp_path / "train"
+    root.mkdir()
+    path = root / "rulebook.md"
+    path.write_text("# Rules\n- Revenue excludes returns.\n", encoding="utf-8")
+    original = compile_clauses((SourceFile(path, "rulebook.md", sha256_file(path)),))
+    original_match = retrieve_clauses("revenue returns", original, limit=1)[0]
+    path.write_text("# Rules\n- Revenue includes returns.\n", encoding="utf-8")
+    changed = compile_clauses((SourceFile(path, "rulebook.md", sha256_file(path)),))
+    changed_match = retrieve_clauses("revenue returns", changed, limit=1)[0]
+    assert original_match.index_digest != changed_match.index_digest
+    assert retrieve_clauses("unrelated", changed, limit=1) == []
+    with pytest.raises(ValueError):
+        retrieve_clauses("revenue", changed, limit=0)
+    with pytest.raises(ValueError):
+        retrieve_clauses("revenue", changed, limit=101)
+    with pytest.raises(ValueError):
+        retrieve_clauses("revenue", changed, limit=1.5)
+    with pytest.raises(ValueError):
+        retrieve_clauses("revenue", changed, limit=True)
