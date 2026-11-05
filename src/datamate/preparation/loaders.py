@@ -6,8 +6,11 @@ from collections.abc import Iterator
 from contextlib import closing
 from itertools import chain, islice
 from pathlib import Path
+from xml.etree.ElementTree import Element, iterparse
+from zipfile import ZipFile
 
 from openpyxl import load_workbook
+from openpyxl.utils.cell import range_boundaries
 
 from datamate.preparation.models import SourceRow, SourceTable
 
@@ -57,6 +60,35 @@ def _csv_tables(path: Path) -> Iterator[SourceTable]:
                 raise ValueError(f"Invalid CSV record {number + 1} in {path}: {exc}") from exc
 
     yield SourceTable(path.stem, headers, 1, rows())
+
+
+def _sheet_merged_ranges(
+    archive: ZipFile, worksheet_path: str
+) -> tuple[tuple[int, int, int, int], ...]:
+    """Stream worksheet XML while retaining only row width and merge coordinates."""
+    ranges: list[tuple[int, int, int, int]] = []
+    stack: list[Element] = []
+    with archive.open(worksheet_path) as source:
+        for event, element in iterparse(source, events=("start", "end")):
+            if event == "start":
+                stack.append(element)
+                continue
+            if element.tag.endswith("}mergeCell"):
+                reference = element.get("ref")
+                if reference is None:
+                    raise ValueError(f"Missing merged range in {worksheet_path}")
+                bounds = range_boundaries(reference)
+                if any(bound is None for bound in bounds):
+                    raise ValueError(f"Incomplete merged range {reference!r}")
+                ranges.append(bounds)
+            if len(stack) > 1:
+                parent = stack[-2]
+                if parent.tag.endswith("}row"):
+                    element.clear()
+                else:
+                    parent.remove(element)
+            stack.pop()
+    return tuple(sorted(ranges, key=lambda span: (span[1], span[0], span[3], span[2])))
 
 
 def _excel_tables(path: Path) -> Iterator[SourceTable]:
@@ -131,6 +163,12 @@ def _excel_tables(path: Path) -> Iterator[SourceTable]:
                         header.number,
                         padded(chain(initial[index + 1 :], iterator), len(header.values)),
                         tuple(initial[:index]),
+                        workbook_epoch=formulas.epoch,
+                        merged_ranges=_sheet_merged_ranges(
+                            formulas._archive, sheet._worksheet_path
+                        ),
+                        header_formulas=header.formulas,
+                        header_formats=header.formats,
                     )
                 finally:
                     iterator.close()

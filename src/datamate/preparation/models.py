@@ -33,6 +33,10 @@ class SourceTable:
     rows: Iterable[SourceRow]
     preamble: tuple[SourceRow, ...] = ()
     declared_types: tuple[str | None, ...] = ()
+    workbook_epoch: datetime | None = None
+    merged_ranges: tuple[tuple[int, int, int, int], ...] | None = None
+    header_formulas: tuple[str | None, ...] = ()
+    header_formats: tuple[str | None, ...] = ()
 
 
 @dataclass(frozen=True)

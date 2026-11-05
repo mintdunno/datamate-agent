@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import pytest
 from openpyxl import Workbook
 
@@ -112,3 +114,67 @@ def test_header_prefers_richest_text_row_and_preserves_metadata(tmp_path):
     assert table.preamble[0].values[:2] == ("Order status", "Approved")
     assert rows[0].number == 4
     assert rows[0].values == tuple(f"value {i}" for i in range(1, 10))
+
+
+@pytest.mark.parametrize(
+    ("epoch", "expected"),
+    [
+        ("1900", datetime(1899, 12, 30)),
+        ("1904", datetime(1904, 1, 1)),
+    ],
+)
+def test_excel_exposes_sheet_epoch_merges_and_header_cell_metadata(tmp_path, epoch, expected):
+    from openpyxl.utils.datetime import CALENDAR_MAC_1904
+
+    path = tmp_path / "source.xlsx"
+    book = Workbook()
+    if epoch == "1904":
+        book.epoch = CALENDAR_MAC_1904
+    sheet = book.active
+    sheet.title = "Merged"
+    sheet.append(["Order", "Amount", "Date", "=1+1"])
+    sheet["C1"].number_format = "yyyy-mm-dd"
+    sheet["D1"].number_format = "0.00"
+    sheet.append(["A", 4, datetime(2024, 1, 2), 2])
+    sheet.append(["B", 5, datetime(2024, 1, 3), 3])
+    sheet.append([None, 6, datetime(2024, 1, 4), 4])
+    sheet.append(["C", 7, datetime(2024, 1, 5), 5])
+    sheet.merge_cells("A3:A4")
+    sheet.merge_cells("B5:C5")
+    plain = book.create_sheet("Plain")
+    plain.append(["Key", "Value"])
+    plain.append(["x", 1])
+    book.save(path)
+    book.close()
+
+    tables = load_tables(path)
+    merged = next(tables)
+    assert merged.workbook_epoch == expected
+    assert merged.merged_ranges == ((1, 3, 1, 4), (2, 5, 3, 5))
+    assert merged.header_formulas == (None, None, None, "=1+1")
+    assert merged.header_formats[2:] == ("yyyy-mm-dd", "0.00")
+    assert merged.headers == ("Order", "Amount", "Date", None)
+    assert iter(merged.rows) is merged.rows
+    rows = list(merged.rows)
+    assert list(merged.rows) == []
+    assert rows[1].values[0] == "B"
+    assert rows[2].values[0] is None
+    assert rows[3].values[1:3] == (7, None)
+
+    ordinary = next(tables)
+    assert ordinary.workbook_epoch == expected
+    assert ordinary.merged_ranges == ()
+    assert ordinary.header_formulas == (None, None)
+    assert ordinary.header_formats == ("General", "General")
+    assert [row.values for row in ordinary.rows] == [("x", 1)]
+    tables.close()
+
+
+def test_non_excel_tables_mark_workbook_metadata_unavailable(tmp_path):
+    path = tmp_path / "source.csv"
+    path.write_text("name,value\na,1\n", encoding="utf-8")
+    table = next(load_tables(path))
+    assert table.workbook_epoch is None
+    assert table.merged_ranges is None
+    assert table.header_formulas == ()
+    assert table.header_formats == ()
