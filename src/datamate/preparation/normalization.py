@@ -12,14 +12,9 @@ from typing import Literal, Self
 
 from pydantic import Field, model_validator
 
-from datamate.contracts.base import ContractModel, NonblankString, Sha256
+from datamate.contracts.base import ContractModel
+from datamate.preparation.models import EvidenceRef as Evidence
 from datamate.preparation.models import RawValue, SourceRow
-
-
-class Evidence(ContractModel):
-    source: NonblankString
-    sha256: Sha256
-    locator: NonblankString
 
 
 class ColumnPlan(ContractModel):

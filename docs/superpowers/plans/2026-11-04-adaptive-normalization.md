@@ -11,7 +11,7 @@
 **Spec:** docs/superpowers/specs/2026-11-04-adaptive-normalization-design.md, revision 3, updated for the user's Polars-only decision on 2026-11-05, retaining revision 2's approved simplification. Read both documents. Source authority remains the active split's rulebook/README/calendar and official competition rules; uncorrected v3 examples do not override them.
 
 **Status:** Revision 3 retains Polars and removes planned Pandas usage; product
-implementation started on 2026-11-05. Task 1 is complete; Tasks 2–24 remain. The 24-task structure and existing execution method
+implementation started on 2026-11-05. Tasks 1–2 are complete; Tasks 3–24 remain (Task 18 is in parallel integration). The 24-task structure and existing execution method
 are retained. The revision record below distinguishes spec changes from implementation choices.
 
 ## Global Constraints
@@ -218,7 +218,7 @@ assert case_ids == set(range(1, 45))
 **Files:** Modify src/datamate/preparation/models.py, src/datamate/preparation/normalization.py, src/datamate/preparation/pipeline.py; create src/datamate/preparation/storage.py, tests/test_normalization_storage.py.
 **Interfaces:** Defines the shared production contracts using the boundary/internal policy above; implement behavior in its owning task, without speculative helper/framework scaffolding. create_storage(db:DuckDBPyConnection)->None, stage_table(db,source:SourceFile,table:SourceTable)->StagedTable, iter_raw_batches(db,table_id:str,batch_size:int)->Iterator[list[RawRecord]]. Raw values are immutable; consume SourceTable.rows exactly once. Do not create duplicate Pydantic DTOs for every raw/fact persistence hop.
 
-- [ ] Write test_staging_preserves_types_formulas_keys_preamble_and_distinct_row_identity and test_one_raw_row_can_have_two_facts_but_one_disposition. Assert two identical source rows have different IDs, exact tagged raw values survive, two lineage edges do not double raw accounting and duplicate dispositions fail.
+- [x] Write test_staging_preserves_types_formulas_keys_preamble_and_distinct_row_identity and test_one_raw_row_can_have_two_facts_but_one_disposition. Assert two identical source rows have different IDs, exact tagged raw values survive, two lineage edges do not double raw accounting and duplicate dispositions fail.
 
 ```python
 assert identical_rows[0].record_id != identical_rows[1].record_id
@@ -227,10 +227,10 @@ assert (raw_count, disposition_count, fact_count, lineage_count) == (1, 1, 2, 2)
 assert original_formula == "=A1+B1"
 ```
 
-- [ ] Run uv run --locked pytest tests/test_normalization_storage.py -q; expect missing storage/contracts.
-- [ ] Implement versioned staging/meta/clean scaffolding, source/hash/ordinal/parser-bound IDs and separate persistence for facts, disposition and lineage. Move Evidence ownership without import cycles; keep ColumnPlan/TablePlan behavior compatible. Preserve existing source snapshot and single-use iterator semantics.
-- [ ] Run task tests plus tests/test_preparation.py, tests/test_normalization.py. Do not reuse normalized_json as the only place for canonical children; leave legacy helpers versioned until Task 17 switches publication.
-- [ ] Commit: refactor(preparation): separate immutable raw storage and fact lineage.
+- [x] Run uv run --locked pytest tests/test_normalization_storage.py -q; expect missing storage/contracts.
+- [x] Implement versioned staging/meta/clean scaffolding, source/hash/ordinal/parser-bound IDs and separate persistence for facts, disposition and lineage. Move Evidence ownership without import cycles; keep ColumnPlan/TablePlan behavior compatible. Preserve existing source snapshot and single-use iterator semantics.
+- [x] Run task tests plus tests/test_preparation.py, tests/test_normalization.py. Do not reuse normalized_json as the only place for canonical children; leave legacy helpers versioned until Task 17 switches publication.
+- [x] Commit: refactor(preparation): separate immutable raw storage and fact lineage.
 
 ### Task 3: Full CPU profiles and deterministic evidence sampling (P1)
 
