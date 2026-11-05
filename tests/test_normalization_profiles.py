@@ -93,3 +93,28 @@ def test_uniform_tables_still_provide_distinct_representative_source_records(tmp
         assert profile.source == "data/shop/x.csv"
         assert profile.source_sha256 == "a" * 64
         assert profile.source_table == "sales"
+
+
+def test_structure_samples_refer_to_actual_header_or_preamble_not_arbitrary_data(tmp_path):
+    module = importlib.import_module("datamate.preparation.profiling")
+    with duckdb.connect() as db:
+        create_storage(db)
+        table = stage_table(
+            db,
+            SourceFile(tmp_path / "x.csv", "data/shop/x.csv", "a" * 64),
+            SourceTable(
+                "sales",
+                ("id", "amount"),
+                2,
+                [SourceRow(i, (str(i), i)) for i in range(3, 43)],
+                preamble=(SourceRow(1, ("Title",)),),
+            ),
+        )
+        profile = module.profile_table(db, table.table_id)
+        structural = [sample for sample in profile.samples if sample.kind != "data"]
+        assert {sample.kind for sample in structural} == {"header", "preamble"}
+        assert {sample.record_id for sample in structural} == {
+            f"{table.table_id}:1",
+            f"{table.table_id}:2",
+        }
+        assert len(profile.samples) <= 64

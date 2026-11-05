@@ -126,6 +126,7 @@ class SampleRef(ContractModel):
     column_id: str
     pattern_id: str
     pattern_count: int = Field(ge=1)
+    kind: Literal["data", "header", "preamble"] = "data"
 
 
 class ColumnProfile(ContractModel):

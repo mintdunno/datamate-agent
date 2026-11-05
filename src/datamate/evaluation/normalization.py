@@ -356,8 +356,8 @@ def select_cases(
                 token in header for token in ("date", "ngày", "ngay", "time", "calendar")
             ):
                 hints.add("temporal")
-            if profile.raw_record_count > profile.row_count:
-                hints.add("structure")
+            if sample.kind != "data":
+                hints = {"structure"}
             rank = _digest([policy.seed, profile.table_id, sample.record_id, sample.column_id])
             for business in matches:
                 pools[business].append((rank, profile, sample, hints))

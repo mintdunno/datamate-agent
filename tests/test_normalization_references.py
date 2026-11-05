@@ -164,6 +164,10 @@ def test_case_selection_is_seeded_source_bound_and_independent_of_profile_order(
         assert (
             len({case.record_id for case in manifest.cases if case.business_id == business}) == 20
         )
+        assert (
+            sum(c.business_id == business and c.stratum == "structure" for c in manifest.cases) == 1
+        )
+        assert manifest.missing_strata[business]["structure"] == 3
     assert all(not hasattr(case, "expected_value") for case in manifest.cases)
     with pytest.raises(ValueError, match="source"):
         module.select_cases(

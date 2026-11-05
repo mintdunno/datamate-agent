@@ -137,11 +137,31 @@ def profile_table(db: DuckDBPyConnection, table_id: str, *, batch_size: int = 10
     db.execute("DELETE FROM meta.profile_patterns WHERE table_id=?", [table_id])
     kinds = Counter()
     representatives = []
+    structural = []
     counters = [
         {"types": Counter(), "null": 0, "blank": 0, "unique": set(), "exact": True} for _ in columns
     ]
     for batch in iter_raw_batches(db, table_id, batch_size):
         kinds.update(record.kind for record in batch)
+        for record in batch:
+            if record.kind == "data" or not record.source.values:
+                continue
+            index = next(
+                (
+                    i
+                    for i, value in enumerate(record.source.values[: len(columns)])
+                    if value is not None
+                ),
+                0,
+            )
+            rank = int(
+                hashlib.sha256(("structure-v1:" + record.record_id).encode()).hexdigest(), 16
+            )
+            item = (-rank, record.record_id, columns[index], record.kind)
+            if len(structural) < 8:
+                heapq.heappush(structural, item)
+            elif item > structural[0]:
+                heapq.heapreplace(structural, item)
         data = [record for record in batch if record.kind == "data"]
         if not data:
             continue
@@ -221,7 +241,7 @@ def profile_table(db: DuckDBPyConnection, table_id: str, *, batch_size: int = 10
     candidates = {}
     for direction in ("ASC", "DESC"):
         for column, pattern, count, record in db.execute(
-            grouped + f" ORDER BY n {direction},column_id,pattern LIMIT 16", [table_id]
+            grouped + f" ORDER BY n {direction},column_id,pattern LIMIT 12", [table_id]
         ).fetchall():
             key = column, pattern, record
             candidates[key] = SampleRef(
@@ -242,6 +262,14 @@ def profile_table(db: DuckDBPyConnection, table_id: str, *, batch_size: int = 10
             pattern_id=hashlib.sha256(pattern.encode()).hexdigest(),
             pattern_count=count,
         )
+    for _, record, column, kind in structural:
+        candidates[column, kind, record] = SampleRef(
+            record_id=record,
+            column_id=column,
+            kind=kind,
+            pattern_id=hashlib.sha256(kind.encode()).hexdigest(),
+            pattern_count=1,
+        )
     result = TableProfile(
         table_id=table_id,
         source=info[3],
@@ -252,7 +280,7 @@ def profile_table(db: DuckDBPyConnection, table_id: str, *, batch_size: int = 10
         record_kinds=dict(kinds),
         columns=tuple(profiles),
         samples=tuple(candidates[k] for k in sorted(candidates)),
-        profile_version="profile-v2-2",
+        profile_version="profile-v2-3",
         candidate_keys=tuple(
             column.column_id
             for column in profiles
