@@ -12,6 +12,18 @@ from pydantic import Field, TypeAdapter, model_validator
 
 from datamate.contracts.base import ContractModel, NonblankString, Sha256
 from datamate.preparation.discovery import discover_business
+from datamate.preparation.models import TableProfile
+
+SELECTOR_VERSION = "stratified-source-v1"
+STRATUM_TARGETS = {"rare": 4, "common": 4, "identity": 4, "temporal": 4, "structure": 4}
+
+
+def _digest(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+        ).encode()
+    ).hexdigest()
 
 
 def _safe_component(value: str) -> bool:
@@ -110,6 +122,125 @@ def load_case_catalog(path: Path) -> tuple[CatalogCase, ...]:
     if len(cases) != 44 or {case.case_id for case in cases} != set(range(1, 45)):
         raise ValueError("catalog must contain all 44 cases exactly once")
     return tuple(sorted(cases, key=lambda case: case.case_id))
+
+
+class NormalizationCase(ContractModel):
+    case_id: Sha256
+    business_id: NonblankString
+    partition: Literal["development", "checkpoint"]
+    record_id: NonblankString
+    column_id: NonblankString
+    source: NonblankString
+    source_sha256: Sha256
+    table_id: NonblankString
+    stratum: Literal["rare", "common", "identity", "temporal", "structure"]
+
+
+class CaseManifest(ContractModel):
+    source_policy_digest: Sha256
+    profile_digests: tuple[Sha256, ...]
+    selector_version: str
+    stratum_targets: dict[str, int]
+    missing_strata: dict[str, dict[str, int]]
+    cases: tuple[NormalizationCase, ...] = Field(min_length=100, max_length=100)
+
+    @property
+    def digest(self) -> str:
+        return _digest(self.model_dump(mode="json"))
+
+
+def select_cases(
+    policy: PilotPolicy, sources: SourceSnapshot, profiles: Sequence[TableProfile]
+) -> CaseManifest:
+    source_digest = freeze_selection_policy(policy, sources)
+    if len({profile.table_id for profile in profiles}) != len(profiles):
+        raise ValueError("duplicate physical source profile")
+    pools = {business: [] for business in policy.business_ids}
+    for profile in profiles:
+        matches = [
+            business
+            for business, files in sources.files.items()
+            if files.get(profile.source) == profile.source_sha256
+        ]
+        if not matches:
+            raise ValueError("profile does not match frozen source evidence")
+        columns = {column.column_id: column for column in profile.columns}
+        for sample in profile.samples:
+            column = columns[sample.column_id]
+            hints = {"rare" if sample.pattern_count <= 2 else "common"}
+            if sample.column_id in profile.candidate_keys:
+                hints.add("identity")
+            header = str(column.source_header.get("value", "")).casefold()
+            if set(column.raw_types) & {"date", "datetime", "time"} or any(
+                token in header for token in ("date", "ngày", "ngay", "time", "calendar")
+            ):
+                hints.add("temporal")
+            if profile.raw_record_count > profile.row_count:
+                hints.add("structure")
+            rank = _digest([policy.seed, profile.table_id, sample.record_id, sample.column_id])
+            for business in matches:
+                pools[business].append((rank, profile, sample, hints))
+    cases = []
+    deficits = {}
+    for business in sorted(pools):
+        pool = sorted(pools[business], key=lambda item: item[0])
+        selected = []
+        seen = set()
+        counts = {stratum: 0 for stratum in STRATUM_TARGETS}
+
+        def take(item, stratum, *, seen=seen, counts=counts, selected=selected, business=business):
+            _, profile, sample, _ = item
+            seen.add(sample.record_id)
+            counts[stratum] += 1
+            selected.append(
+                NormalizationCase(
+                    case_id=_digest(
+                        [
+                            source_digest,
+                            SELECTOR_VERSION,
+                            business,
+                            sample.record_id,
+                            sample.column_id,
+                            stratum,
+                        ]
+                    ),
+                    business_id=business,
+                    partition="checkpoint" if business in policy.checkpoint else "development",
+                    record_id=sample.record_id,
+                    column_id=sample.column_id,
+                    source=profile.source,
+                    source_sha256=profile.source_sha256,
+                    table_id=profile.table_id,
+                    stratum=stratum,
+                )
+            )
+
+        for stratum, target in STRATUM_TARGETS.items():
+            for item in pool:
+                if counts[stratum] >= target:
+                    break
+                if stratum in item[3] and item[2].record_id not in seen:
+                    take(item, stratum)
+        for item in pool:
+            if len(selected) >= policy.cases_per_business:
+                break
+            if item[2].record_id not in seen:
+                take(item, sorted(item[3])[0])
+        if len(selected) != policy.cases_per_business:
+            raise ValueError("insufficient distinct source records for frozen pilot cases")
+        deficits[business] = {
+            s: target - counts[s] for s, target in STRATUM_TARGETS.items() if counts[s] < target
+        }
+        cases.extend(selected)
+    # Risk strata are source hints, not verified semantic/difficulty labels. Persist deficits.
+    return CaseManifest(
+        source_policy_digest=source_digest,
+        profile_digests=tuple(sorted(profile.digest for profile in profiles)),
+        selector_version=SELECTOR_VERSION,
+        stratum_targets=dict(STRATUM_TARGETS),
+        missing_strata=deficits,
+        cases=tuple(sorted(cases, key=lambda case: case.case_id)),
+    )
 
 
 def load_pilot_policy(path: Path) -> PilotPolicy:

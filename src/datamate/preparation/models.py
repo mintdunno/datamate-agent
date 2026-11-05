@@ -140,6 +140,9 @@ class ColumnProfile(ContractModel):
 
 class TableProfile(ContractModel):
     table_id: str
+    source: str
+    source_sha256: Sha256
+    source_table: str
     row_count: int = Field(ge=0)
     raw_record_count: int = Field(ge=0)
     record_kinds: dict[str, int]

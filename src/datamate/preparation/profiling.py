@@ -1,6 +1,7 @@
 """Bounded-memory profiles cover every record without retaining value samples."""
 
 import hashlib
+import heapq
 import json
 import re
 from collections import Counter
@@ -120,7 +121,7 @@ def _shape(value: object) -> str:
 
 def profile_table(db: DuckDBPyConnection, table_id: str, *, batch_size: int = 1000) -> TableProfile:
     info = db.execute(
-        "SELECT columns_json,headers_json,declared_types_json "
+        "SELECT columns_json,headers_json,declared_types_json,source,source_sha256,table_name "
         "FROM meta.source_tables WHERE table_id=?",
         [table_id],
     ).fetchone()
@@ -135,6 +136,7 @@ def profile_table(db: DuckDBPyConnection, table_id: str, *, batch_size: int = 10
         table_id VARCHAR,column_id VARCHAR,pattern VARCHAR,n BIGINT,sample VARCHAR)""")
     db.execute("DELETE FROM meta.profile_patterns WHERE table_id=?", [table_id])
     kinds = Counter()
+    representatives = []
     counters = [
         {"types": Counter(), "null": 0, "blank": 0, "unique": set(), "exact": True} for _ in columns
     ]
@@ -143,6 +145,21 @@ def profile_table(db: DuckDBPyConnection, table_id: str, *, batch_size: int = 10
         data = [record for record in batch if record.kind == "data"]
         if not data:
             continue
+        for record in data:
+            rank = int(
+                hashlib.sha256(("representative-v1:" + record.record_id).encode()).hexdigest(), 16
+            )
+            column_index = rank % len(columns)
+            item = (
+                -rank,
+                record.record_id,
+                columns[column_index],
+                _shape(record.source.values[column_index]),
+            )
+            if len(representatives) < 32:
+                heapq.heappush(representatives, item)
+            elif item > representatives[0]:
+                heapq.heapreplace(representatives, item)
         pattern_rows = []
         for index, column in enumerate(columns):
             stats = counters[index]
@@ -204,23 +221,38 @@ def profile_table(db: DuckDBPyConnection, table_id: str, *, batch_size: int = 10
     candidates = {}
     for direction in ("ASC", "DESC"):
         for column, pattern, count, record in db.execute(
-            grouped + f" ORDER BY n {direction},column_id,pattern LIMIT 32", [table_id]
+            grouped + f" ORDER BY n {direction},column_id,pattern LIMIT 16", [table_id]
         ).fetchall():
-            key = column, pattern
+            key = column, pattern, record
             candidates[key] = SampleRef(
                 record_id=record,
                 column_id=column,
                 pattern_id=hashlib.sha256(pattern.encode()).hexdigest(),
                 pattern_count=count,
             )
+    for _, record, column, pattern in representatives:
+        count = db.execute(
+            "SELECT sum(n) FROM meta.profile_patterns "
+            "WHERE table_id=? AND column_id=? AND pattern=?",
+            [table_id, column, pattern],
+        ).fetchone()[0]
+        candidates[column, pattern, record] = SampleRef(
+            record_id=record,
+            column_id=column,
+            pattern_id=hashlib.sha256(pattern.encode()).hexdigest(),
+            pattern_count=count,
+        )
     result = TableProfile(
         table_id=table_id,
+        source=info[3],
+        source_sha256=info[4],
+        source_table=info[5],
         row_count=kinds["data"],
         raw_record_count=sum(kinds.values()),
         record_kinds=dict(kinds),
         columns=tuple(profiles),
         samples=tuple(candidates[k] for k in sorted(candidates)),
-        profile_version="profile-v2-1",
+        profile_version="profile-v2-2",
         candidate_keys=tuple(
             column.column_id
             for column in profiles

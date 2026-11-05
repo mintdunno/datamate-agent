@@ -76,3 +76,20 @@ def test_unique_columns_are_only_key_candidates_not_accepted_relationships(tmp_p
         assert profile.candidate_keys == ("c0001",)
         assert profile.columns[0].source_header == {"type": "str", "value": "unknown_code"}
         assert not hasattr(profile, "accepted_relationships")
+
+
+def test_uniform_tables_still_provide_distinct_representative_source_records(tmp_path):
+    module = importlib.import_module("datamate.preparation.profiling")
+    with duckdb.connect() as db:
+        create_storage(db)
+        table = stage_table(
+            db,
+            SourceFile(tmp_path / "x.csv", "data/shop/x.csv", "a" * 64),
+            SourceTable("sales", ("id",), None, [SourceRow(i, ("same",)) for i in range(1, 41)]),
+        )
+        profile = module.profile_table(db, table.table_id)
+        assert len({sample.record_id for sample in profile.samples}) >= 20
+        assert len(profile.samples) <= 64
+        assert profile.source == "data/shop/x.csv"
+        assert profile.source_sha256 == "a" * 64
+        assert profile.source_table == "sales"

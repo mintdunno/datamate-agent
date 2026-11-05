@@ -147,3 +147,27 @@ def test_catalog_requires_every_owned_case_exactly_once(tmp_path):
     bad.write_text(json.dumps(duplicate), encoding="utf-8")
     with pytest.raises(ValueError, match="44"):
         module.load_case_catalog(bad)
+
+
+def test_case_selection_is_seeded_source_bound_and_independent_of_profile_order(tmp_path):
+    from normalization_fixtures import reference_world
+
+    module = api()
+    selection, sources, profiles = reference_world(tmp_path)
+    manifest = module.select_cases(selection, sources, profiles)
+    reversed_manifest = module.select_cases(selection, sources, list(reversed(profiles)))
+    assert len(manifest.cases) == len({case.case_id for case in manifest.cases}) == 100
+    assert manifest.digest == reversed_manifest.digest
+    assert sum(case.business_id in selection.development for case in manifest.cases) == 80
+    assert sum(case.business_id in selection.checkpoint for case in manifest.cases) == 20
+    for business in selection.business_ids:
+        assert (
+            len({case.record_id for case in manifest.cases if case.business_id == business}) == 20
+        )
+    assert all(not hasattr(case, "expected_value") for case in manifest.cases)
+    with pytest.raises(ValueError, match="source"):
+        module.select_cases(
+            selection,
+            sources,
+            [profiles[0].model_copy(update={"source_sha256": "b" * 64}), *profiles[1:]],
+        )
