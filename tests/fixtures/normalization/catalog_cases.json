@@ -1,0 +1,355 @@
+[
+  {
+    "case_id": 1,
+    "owner": "N",
+    "task": 10,
+    "test_modules": [
+      "tests/test_excel_regressions.py"
+    ]
+  },
+  {
+    "case_id": 2,
+    "owner": "N",
+    "task": 10,
+    "test_modules": [
+      "tests/test_excel_regressions.py"
+    ]
+  },
+  {
+    "case_id": 3,
+    "owner": "N",
+    "task": 10,
+    "test_modules": [
+      "tests/test_excel_regressions.py"
+    ]
+  },
+  {
+    "case_id": 4,
+    "owner": "N",
+    "task": 14,
+    "test_modules": [
+      "tests/test_canonical_projection.py"
+    ]
+  },
+  {
+    "case_id": 5,
+    "owner": "N",
+    "task": 10,
+    "test_modules": [
+      "tests/test_excel_regressions.py"
+    ]
+  },
+  {
+    "case_id": 6,
+    "owner": "N",
+    "task": 10,
+    "test_modules": [
+      "tests/test_excel_regressions.py"
+    ]
+  },
+  {
+    "case_id": 7,
+    "owner": "N",
+    "task": 11,
+    "test_modules": [
+      "tests/test_cleaning_operations.py"
+    ]
+  },
+  {
+    "case_id": 8,
+    "owner": "N",
+    "task": 2,
+    "test_modules": [
+      "tests/test_loaders.py",
+      "tests/test_normalization_storage.py"
+    ]
+  },
+  {
+    "case_id": 9,
+    "owner": "N",
+    "task": 10,
+    "test_modules": [
+      "tests/test_excel_regressions.py"
+    ]
+  },
+  {
+    "case_id": 10,
+    "owner": "M",
+    "task": 6,
+    "test_modules": [
+      "tests/test_semantic_bindings.py"
+    ]
+  },
+  {
+    "case_id": 11,
+    "owner": "N",
+    "task": 11,
+    "test_modules": [
+      "tests/test_cleaning_operations.py"
+    ]
+  },
+  {
+    "case_id": 12,
+    "owner": "N",
+    "task": 11,
+    "test_modules": [
+      "tests/test_cleaning_operations.py"
+    ]
+  },
+  {
+    "case_id": 13,
+    "owner": "N",
+    "task": 9,
+    "test_modules": [
+      "tests/test_normalization.py"
+    ]
+  },
+  {
+    "case_id": 14,
+    "owner": "N",
+    "task": 9,
+    "test_modules": [
+      "tests/test_normalization.py"
+    ]
+  },
+  {
+    "case_id": 15,
+    "owner": "N",
+    "task": 9,
+    "test_modules": [
+      "tests/test_normalization.py"
+    ]
+  },
+  {
+    "case_id": 16,
+    "owner": "N",
+    "task": 9,
+    "test_modules": [
+      "tests/test_normalization.py"
+    ]
+  },
+  {
+    "case_id": 17,
+    "owner": "N",
+    "task": 14,
+    "test_modules": [
+      "tests/test_canonical_projection.py"
+    ]
+  },
+  {
+    "case_id": 18,
+    "owner": "N",
+    "task": 12,
+    "test_modules": [
+      "tests/test_semantic_bindings.py"
+    ]
+  },
+  {
+    "case_id": 19,
+    "owner": "N",
+    "task": 12,
+    "test_modules": [
+      "tests/test_semantic_bindings.py"
+    ]
+  },
+  {
+    "case_id": 20,
+    "owner": "M",
+    "task": 6,
+    "test_modules": [
+      "tests/test_semantic_bindings.py"
+    ]
+  },
+  {
+    "case_id": 21,
+    "owner": "N",
+    "task": 12,
+    "test_modules": [
+      "tests/test_semantic_bindings.py"
+    ]
+  },
+  {
+    "case_id": 22,
+    "owner": "N",
+    "task": 12,
+    "test_modules": [
+      "tests/test_semantic_bindings.py"
+    ]
+  },
+  {
+    "case_id": 23,
+    "owner": "M",
+    "task": 6,
+    "test_modules": [
+      "tests/test_semantic_bindings.py"
+    ]
+  },
+  {
+    "case_id": 24,
+    "owner": "M",
+    "task": 6,
+    "test_modules": [
+      "tests/test_semantic_bindings.py"
+    ]
+  },
+  {
+    "case_id": 25,
+    "owner": "M",
+    "task": 6,
+    "test_modules": [
+      "tests/test_semantic_bindings.py"
+    ]
+  },
+  {
+    "case_id": 26,
+    "owner": "N",
+    "task": 13,
+    "test_modules": [
+      "tests/test_cleaning_operations.py"
+    ]
+  },
+  {
+    "case_id": 27,
+    "owner": "N",
+    "task": 13,
+    "test_modules": [
+      "tests/test_cleaning_operations.py"
+    ]
+  },
+  {
+    "case_id": 28,
+    "owner": "N",
+    "task": 13,
+    "test_modules": [
+      "tests/test_cleaning_operations.py"
+    ]
+  },
+  {
+    "case_id": 29,
+    "owner": "N",
+    "task": 13,
+    "test_modules": [
+      "tests/test_cleaning_operations.py"
+    ]
+  },
+  {
+    "case_id": 30,
+    "owner": "Q",
+    "task": 6,
+    "test_modules": [
+      "tests/test_semantic_bindings.py"
+    ]
+  },
+  {
+    "case_id": 31,
+    "owner": "Q",
+    "task": 6,
+    "test_modules": [
+      "tests/test_semantic_bindings.py"
+    ]
+  },
+  {
+    "case_id": 32,
+    "owner": "N",
+    "task": 14,
+    "test_modules": [
+      "tests/test_canonical_projection.py"
+    ]
+  },
+  {
+    "case_id": 33,
+    "owner": "M",
+    "task": 6,
+    "test_modules": [
+      "tests/test_semantic_bindings.py"
+    ]
+  },
+  {
+    "case_id": 34,
+    "owner": "Q",
+    "task": 6,
+    "test_modules": [
+      "tests/test_semantic_bindings.py"
+    ]
+  },
+  {
+    "case_id": 35,
+    "owner": "N",
+    "task": 14,
+    "test_modules": [
+      "tests/test_canonical_projection.py"
+    ]
+  },
+  {
+    "case_id": 36,
+    "owner": "Q",
+    "task": 15,
+    "test_modules": [
+      "tests/test_periods.py"
+    ]
+  },
+  {
+    "case_id": 37,
+    "owner": "M",
+    "task": 6,
+    "test_modules": [
+      "tests/test_semantic_bindings.py"
+    ]
+  },
+  {
+    "case_id": 38,
+    "owner": "M",
+    "task": 6,
+    "test_modules": [
+      "tests/test_semantic_bindings.py"
+    ]
+  },
+  {
+    "case_id": 39,
+    "owner": "M",
+    "task": 6,
+    "test_modules": [
+      "tests/test_semantic_bindings.py"
+    ]
+  },
+  {
+    "case_id": 40,
+    "owner": "M",
+    "task": 6,
+    "test_modules": [
+      "tests/test_semantic_bindings.py"
+    ]
+  },
+  {
+    "case_id": 41,
+    "owner": "N",
+    "task": 14,
+    "test_modules": [
+      "tests/test_canonical_projection.py"
+    ]
+  },
+  {
+    "case_id": 42,
+    "owner": "N",
+    "task": 14,
+    "test_modules": [
+      "tests/test_canonical_projection.py"
+    ]
+  },
+  {
+    "case_id": 43,
+    "owner": "Q",
+    "task": 6,
+    "test_modules": [
+      "tests/test_semantic_bindings.py"
+    ]
+  },
+  {
+    "case_id": 44,
+    "owner": "Q",
+    "task": 6,
+    "test_modules": [
+      "tests/test_semantic_bindings.py"
+    ]
+  }
+]

@@ -6,9 +6,9 @@ import os
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Self
+from typing import Literal, Self
 
-from pydantic import Field, model_validator
+from pydantic import Field, TypeAdapter, model_validator
 
 from datamate.contracts.base import ContractModel, NonblankString, Sha256
 from datamate.preparation.discovery import discover_business
@@ -24,11 +24,11 @@ def _safe_component(value: str) -> bool:
 
 class PilotPolicy(ContractModel):
     version: int = Field(default=1, ge=1)
-    split_id: NonblankString = "train"
+    split_id: Literal["train"] = "train"
     development: tuple[NonblankString, ...]
     checkpoint: tuple[NonblankString, ...]
     seed: int = Field(default=42, ge=0)
-    cases_per_business: int = Field(default=20, ge=20)
+    cases_per_business: Literal[20] = 20
     minimum_determinate: int = Field(default=10, ge=10)
     campaign_limit: int = Field(default=120, ge=1, le=120)
     phase_limits: dict[str, int] = Field(
@@ -85,6 +85,31 @@ class SourceSnapshot(ContractModel):
                 ):
                     raise ValueError("snapshot contains non-source path")
         return self
+
+
+class CatalogCase(ContractModel):
+    case_id: int = Field(ge=1, le=44)
+    owner: Literal["N", "M", "Q"]
+    task: int = Field(ge=1, le=24)
+    test_modules: tuple[NonblankString, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def test_paths(self) -> Self:
+        if any(
+            not path.startswith("tests/")
+            or not path.endswith(".py")
+            or not all(_safe_component(part) for part in path.split("/"))
+            for path in self.test_modules
+        ):
+            raise ValueError("catalog tests must be repository test modules")
+        return self
+
+
+def load_case_catalog(path: Path) -> tuple[CatalogCase, ...]:
+    cases = TypeAdapter(tuple[CatalogCase, ...]).validate_json(path.read_bytes())
+    if len(cases) != 44 or {case.case_id for case in cases} != set(range(1, 45)):
+        raise ValueError("catalog must contain all 44 cases exactly once")
+    return tuple(sorted(cases, key=lambda case: case.case_id))
 
 
 def load_pilot_policy(path: Path) -> PilotPolicy:

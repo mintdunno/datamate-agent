@@ -11,7 +11,7 @@
 **Spec:** docs/superpowers/specs/2026-11-04-adaptive-normalization-design.md, revision 3, updated for the user's Polars-only decision on 2026-11-05, retaining revision 2's approved simplification. Read both documents. Source authority remains the active split's rulebook/README/calendar and official competition rules; uncorrected v3 examples do not override them.
 
 **Status:** Revision 3 retains Polars and removes planned Pandas usage; product
-implementation has not started. The 24-task structure and existing execution method
+implementation started on 2026-11-05. Task 1 is complete; Tasks 2–24 remain. The 24-task structure and existing execution method
 are retained. The revision record below distinguishes spec changes from implementation choices.
 
 ## Global Constraints
@@ -197,8 +197,8 @@ Task 24 is a controlled experiment/report task, not a new production implementat
 **Files:** Modify docs/normalization/NORMALIZATION_SPEC.md, docs/normalization/ERROR_CATALOG.md; create config/normalization/pilot.json, src/datamate/evaluation/normalization.py, tests/fixtures/normalization/catalog_cases.json, tests/test_normalization_references.py.
 **Interfaces:** Produces the evaluator-only shared types above, snapshot_sources(split_root:Path,business_ids:Sequence[str],*,split_id:str)->SourceSnapshot, freeze_selection_policy(policy:PilotPolicy,sources:SourceSnapshot)->str and load_pilot_policy(path:Path)->PilotPolicy. Snapshot uses discovery's source allowlist, never the QA suite builder or broad split hashing that reads questions/answers. Case/ref records have case_id,source hashes,scope,assertions and versions; evidence_status is separate from expected_behavior. ReferenceProposal forbids authoritative verification fields; only evaluator verification can construct an accepted AdjudicatedReference.
 
-- [ ] Write test_pilot_policy_is_five_train_businesses_and_has_no_labels: assert four exact Excel IDs, biz_123 checkpoint, seed 42,20 cases/business,10 determinate minimum, campaign 120 and20/60/40 caps; reject unknown/duplicate business IDs in selection and label/prediction paths.
-- [ ] Write test_catalog_has_44_unique_owned_cases and test_spec_temporal_warranty_rules_match_active_sources: IDs 1..44; every case has N/M/Q owner and owning task; no fixed 2026 rule, unconditional warranty exclusion or price-only merge. Count assertions are documentary contracts, not business data targets.
+- [x] Write test_pilot_policy_is_five_train_businesses_and_has_no_labels: assert four exact Excel IDs, biz_123 checkpoint, seed 42,20 cases/business,10 determinate minimum, campaign 120 and20/60/40 caps; reject unknown/duplicate business IDs in selection and label/prediction paths.
+- [x] Write test_catalog_has_44_unique_owned_cases and test_spec_temporal_warranty_rules_match_active_sources: IDs 1..44; every case has N/M/Q owner and owning task; no fixed 2026 rule, unconditional warranty exclusion or price-only merge. Count assertions are documentary contracts, not business data targets.
 
 ```python
 assert dev_ids == {"biz_124", "biz_106", "biz_120", "biz_122"}
@@ -208,10 +208,10 @@ assert (campaign_limit, phase_limits) == (120, {"smoke": 20, "development": 60, 
 assert case_ids == set(range(1, 45))
 ```
 
-- [ ] Run uv run --locked pytest tests/test_normalization_references.py -q; expect missing API/config failures, not unexpected network/data access.
-- [ ] Implement types/policy freeze, quoted-source corrections and a versioned 44-case task mapping. Align the source document's earlier library preference with the user's Polars-only decision. Keep external237/237/count claims explicitly unverified; do not encode public targets/alias lists as expected outputs.
-- [ ] Re-run the task tests; policy freezes before profiles, source drift changes digest and immutable-policy overwrite fails. Update docs hashes in the new execution report when corrections are committed.
-- [ ] Commit: docs(normalization): reconcile source rules and freeze pilot contracts.
+- [x] Run uv run --locked pytest tests/test_normalization_references.py -q; expect missing API/config failures, not unexpected network/data access.
+- [x] Implement types/policy freeze, quoted-source corrections and a versioned 44-case task mapping. Align the source document's earlier library preference with the user's Polars-only decision. Keep external237/237/count claims explicitly unverified; do not encode public targets/alias lists as expected outputs.
+- [x] Re-run the task tests; policy freezes before profiles, source drift changes digest and immutable-policy overwrite fails. Update docs hashes in the new execution report when corrections are committed.
+- [x] Commit: docs(normalization): reconcile source rules and freeze pilot contracts.
 
 ### Task 2: Raw storage, stable identity and 1:N production contracts (P1)
 

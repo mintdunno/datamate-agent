@@ -81,6 +81,8 @@ def test_source_drift_changes_freeze_and_existing_freeze_cannot_be_overwritten(t
         {"campaign_limit": 121},
         {"phase_limits": {"smoke": 21, "development": 60, "final": 40}},
         {"minimum_determinate": 21},
+        {"cases_per_business": 21},
+        {"split_id": "public_test"},
     ],
 )
 def test_policy_rejects_unsafe_selection_or_budget_increase(changes):
@@ -131,3 +133,17 @@ def test_failed_publication_does_not_expose_partial_freeze(tmp_path, monkeypatch
         module.write_frozen_selection(target, selection, sources)
     assert not target.exists()
     assert list(target.parent.iterdir()) == []
+
+
+def test_catalog_requires_every_owned_case_exactly_once(tmp_path):
+    module = api()
+    path = Path("tests/fixtures/normalization/catalog_cases.json")
+    cases = module.load_case_catalog(path)
+    assert {case.case_id for case in cases} == set(range(1, 45))
+    assert {case.owner for case in cases} == {"N", "M", "Q"}
+    duplicate = [case.model_dump() for case in cases]
+    duplicate[-1] = duplicate[0]
+    bad = tmp_path / "bad-catalog.json"
+    bad.write_text(json.dumps(duplicate), encoding="utf-8")
+    with pytest.raises(ValueError, match="44"):
+        module.load_case_catalog(bad)
