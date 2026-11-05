@@ -254,10 +254,22 @@ def _numeric_candidates(value: TypedValue, role: str) -> tuple[ParseCandidate, .
         spelling = thousand.group(1)
         number = Decimal(spelling.replace(",", "."))
         possibilities.append((_scaled(number, 3), "thousand_suffix"))
+        for separator, pattern in ((".", _GROUP_DOT), (",", _GROUP_COMMA)):
+            if pattern.fullmatch(spelling):
+                possibilities.append(
+                    (
+                        _scaled(Decimal(spelling.replace(separator, "")), 3),
+                        "thousand_suffix_grouped",
+                    )
+                )
     elif _GROUP_SPACE.fullmatch(token):
         possibilities.append((Decimal(token.replace(" ", "")), "space_group"))
     elif currency and _GROUP_DOT.fullmatch(token):
         possibilities.append((Decimal(token.replace(".", "")), "currency_dot_group"))
+    elif token.count(".") > 1 and _GROUP_DOT.fullmatch(token):
+        possibilities.append((Decimal(token.replace(".", "")), "dot_group"))
+    elif token.count(",") > 1 and _GROUP_COMMA.fullmatch(token):
+        possibilities.append((Decimal(token.replace(",", "")), "comma_group"))
     elif _NUMERIC.fullmatch(token):
         possibilities.append((Decimal(token.replace(",", ".")), "decimal"))
         if _GROUP_DOT.fullmatch(token):
@@ -331,6 +343,8 @@ def _date_candidates(value: TypedValue, role: str, context: dict) -> tuple[Parse
         except ValueError:
             return ()
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}.*", token):
+        if re.search(r"[.,]\d{7,}", token):
+            return (ParseCandidate(value, "iso_datetime", None, ("datetime_precision",), False),)
         try:
             return (ParseCandidate(datetime.fromisoformat(token), "iso_datetime"),)
         except ValueError:

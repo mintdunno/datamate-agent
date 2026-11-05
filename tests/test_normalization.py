@@ -303,3 +303,28 @@ def test_debt_note_k_candidate_requires_note_scope():
     candidates = parse_candidates("nợ 500k", "money", (), {})
     assert [candidate.value for candidate in candidates] == [Decimal("500000")]
     assert "debt_note_scope" in candidates[0].context_requirements
+
+
+@pytest.mark.parametrize("value", ["1.234.567", "1,234,567"])
+def test_multiple_group_separators_have_no_decimal_interpretation(value):
+    from datamate.preparation.normalization import parse_candidates
+
+    assert [c.value for c in parse_candidates(value, "money", (), {})] == [Decimal("1234567")]
+
+
+def test_k_suffix_does_not_hide_ambiguous_base_scale():
+    from datamate.preparation.normalization import parse_candidates
+
+    assert {c.value for c in parse_candidates("1.000k", "money", (), {})} == {
+        Decimal("1000"),
+        Decimal("1000000"),
+    }
+
+
+def test_iso_submicrosecond_precision_stays_raw_instead_of_being_truncated():
+    from datamate.preparation.normalization import parse_candidates
+
+    raw = "2025-06-03T14:05:09.1234567"
+    candidate = parse_candidates(raw, "datetime", (), {})[0]
+    assert candidate.value == raw
+    assert not candidate.precision_supported
