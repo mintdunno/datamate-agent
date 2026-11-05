@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "split_id": "train",
+  "development": ["biz_124", "biz_106", "biz_120", "biz_122"],
+  "checkpoint": ["biz_123"],
+  "seed": 42,
+  "cases_per_business": 20,
+  "minimum_determinate": 10,
+  "campaign_limit": 120,
+  "phase_limits": {"smoke": 20, "development": 60, "final": 40}
+}
