@@ -163,3 +163,33 @@ def test_schema_without_physical_header_retains_source_names_and_declared_types(
             {"type": "str", "value": " Amount "},
         ]
         assert json.loads(metadata[1]) == ["TEXT", "INTEGER"]
+
+
+def test_staging_persists_excel_epoch_merges_and_uncached_header_formula(tmp_path):
+    import json
+
+    module = storage()
+    with duckdb.connect() as db:
+        module.create_storage(db)
+        staged = module.stage_table(
+            db,
+            SourceFile(tmp_path / "x.xlsx", "x.xlsx", "a" * 64),
+            SourceTable(
+                "sheet",
+                ("id", None),
+                1,
+                [SourceRow(2, ("001", 1))],
+                workbook_epoch=datetime(1904, 1, 1),
+                merged_ranges=((1, 2, 1, 3),),
+                header_formulas=(None, "=1+1"),
+                header_formats=("@", "0.00"),
+            ),
+        )
+        header = next(module.iter_raw_batches(db, staged.table_id, 1))[0]
+        assert header.source.formulas == (None, "=1+1")
+        assert header.source.formats == ("@", "0.00")
+        epoch, merges = db.execute(
+            "SELECT workbook_epoch,merged_ranges_json FROM meta.source_tables"
+        ).fetchone()
+        assert epoch == datetime(1904, 1, 1)
+        assert json.loads(merges) == [[1, 2, 1, 3]]

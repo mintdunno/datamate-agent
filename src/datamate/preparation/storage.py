@@ -21,7 +21,7 @@ from datamate.preparation.models import (
 )
 from datamate.preparation.normalization import encoded
 
-RAW_STORAGE_VERSION = "raw-v2-2"
+RAW_STORAGE_VERSION = "raw-v2-3"
 
 
 def _json(value: object) -> str:
@@ -58,7 +58,8 @@ def create_storage(db: DuckDBPyConnection) -> None:
         table_id VARCHAR PRIMARY KEY, source VARCHAR NOT NULL, source_sha256 VARCHAR NOT NULL,
         table_name VARCHAR NOT NULL, header_row BIGINT, columns_json JSON NOT NULL,
         row_count BIGINT NOT NULL, raw_record_count BIGINT NOT NULL,
-        headers_json JSON NOT NULL, declared_types_json JSON NOT NULL)""")
+        headers_json JSON NOT NULL, declared_types_json JSON NOT NULL,
+        workbook_epoch TIMESTAMP, merged_ranges_json JSON)""")
     db.execute("""CREATE TABLE staging.raw_rows(
         record_id VARCHAR PRIMARY KEY, table_id VARCHAR NOT NULL, ordinal BIGINT NOT NULL,
         source_row BIGINT NOT NULL, kind VARCHAR NOT NULL,
@@ -96,7 +97,12 @@ def stage_table(db: DuckDBPyConnection, source: SourceFile, table: SourceTable) 
         for row in table.preamble:
             yield "preamble", row
         if table.header_row is not None:
-            yield "header", SourceRow(table.header_row, table.headers)
+            yield (
+                "header",
+                SourceRow(
+                    table.header_row, table.headers, table.header_formulas, table.header_formats
+                ),
+            )
         for row in table.rows:
             if len(row.values) != len(columns):
                 raise ValueError(f"ragged source row {row.number}")
@@ -127,7 +133,7 @@ def stage_table(db: DuckDBPyConnection, source: SourceFile, table: SourceTable) 
             )
         db.executemany("INSERT INTO staging.raw_rows VALUES (?,?,?,?,?,?,?,?,?)", payloads)
     db.execute(
-        "INSERT INTO meta.source_tables VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO meta.source_tables VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         [
             table_id,
             source.relative_path,
@@ -139,6 +145,8 @@ def stage_table(db: DuckDBPyConnection, source: SourceFile, table: SourceTable) 
             raw_count,
             _json([encoded(value) for value in table.headers]),
             _json(table.declared_types),
+            table.workbook_epoch,
+            None if table.merged_ranges is None else _json(table.merged_ranges),
         ],
     )
     return StagedTable(
