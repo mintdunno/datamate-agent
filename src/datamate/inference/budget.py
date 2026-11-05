@@ -25,13 +25,22 @@ class CampaignPolicy:
     )
 
     def __post_init__(self) -> None:
-        if not self.campaign_id or self.total_limit < 1:
-            raise ValueError("Campaign ID and total limit must be positive")
-        if not self.phase_limits or any(
-            not phase or type(limit) is not int or limit < 1
-            for phase, limit in self.phase_limits.items()
+        if not isinstance(self.campaign_id, str) or not self.campaign_id.strip():
+            raise ValueError("Campaign ID must be a nonempty string")
+        if type(self.total_limit) is not int or self.total_limit < 1:
+            raise ValueError("Campaign total limit must be a positive integer")
+        if (
+            not isinstance(self.phase_limits, dict)
+            or not self.phase_limits
+            or any(
+                not isinstance(phase, str)
+                or not phase.strip()
+                or type(limit) is not int
+                or limit < 1
+                for phase, limit in self.phase_limits.items()
+            )
         ):
-            raise ValueError("Campaign phase limits must be positive")
+            raise ValueError("Campaign phase limits require nonempty strings and positive integers")
 
 
 def _initialize_schema(db: sqlite3.Connection) -> None:
@@ -107,6 +116,13 @@ class RequestBudget:
         self.max_wait_seconds = max_wait_seconds
         if (campaign_id is None) != (phase is None):
             raise ValueError("campaign_id and phase must be supplied together")
+        if campaign_id is not None and (
+            not isinstance(campaign_id, str)
+            or not campaign_id.strip()
+            or not isinstance(phase, str)
+            or not phase.strip()
+        ):
+            raise ValueError("campaign_id and phase must be strings")
         self.campaign_id = campaign_id
         self.phase = phase
         with self._connect() as db:
@@ -156,6 +172,15 @@ class RequestBudget:
             try:
                 with self._connect(timeout=0) as db:
                     db.execute("BEGIN IMMEDIATE")
+                    binding = db.execute(
+                        "SELECT campaign_id, phase FROM campaign_runs WHERE run_id=?",
+                        (self.run_id,),
+                    ).fetchone()
+                    expected_binding = (
+                        (self.campaign_id, self.phase) if self.campaign_id is not None else None
+                    )
+                    if binding != expected_binding:
+                        raise ValueError("run is bound to another campaign or phase")
                     day = db.execute(
                         "SELECT COUNT(*) FROM attempts WHERE at >= ? AND at < ?",
                         (self._day_start(now), self._day_start(now) + 86400),

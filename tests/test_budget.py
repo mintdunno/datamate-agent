@@ -182,3 +182,45 @@ def test_campaign_transport_limits_retry_count(tmp_path):
     budget = RequestBudget(path, run_id="run", campaign_id="pilot", phase="smoke")
     with pytest.raises(ValueError, match="one transport retry"):
         BudgetTransport(httpx.MockTransport(lambda request: httpx.Response(200)), budget)
+
+
+def test_stale_noncampaign_instance_cannot_bypass_run_binding(tmp_path):
+    from datamate.inference.budget import CampaignPolicy, register_campaign
+
+    path = tmp_path / "budget.sqlite"
+    stale = RequestBudget(path, run_id="shared")
+    register_campaign(path, CampaignPolicy("pilot"))
+    bound = RequestBudget(path, run_id="shared", campaign_id="pilot", phase="smoke")
+
+    with pytest.raises(ValueError, match="run is bound"):
+        asyncio.run(stale.acquire())
+    assert bound.snapshot()["day_attempts"] == 0
+    asyncio.run(bound.acquire())
+    assert bound.snapshot()["campaign_attempts"] == 1
+    assert bound.snapshot()["day_attempts"] == 1
+
+
+@pytest.mark.parametrize(
+    ("campaign_id", "total_limit", "phase_limits"),
+    [
+        (12, 120, {"smoke": 20}),
+        ("pilot", 1.5, {"smoke": 20}),
+        ("pilot", True, {"smoke": 20}),
+        ("pilot", 120, {1: 20}),
+    ],
+)
+def test_campaign_policy_rejects_noninteger_caps_and_nonstrings(
+    campaign_id, total_limit, phase_limits
+):
+    from datamate.inference.budget import CampaignPolicy
+
+    with pytest.raises(ValueError):
+        CampaignPolicy(campaign_id, total_limit=total_limit, phase_limits=phase_limits)
+
+
+def test_request_budget_rejects_nonstrings_for_campaign_binding(tmp_path):
+    path = tmp_path / "budget.sqlite"
+    with pytest.raises(ValueError, match="campaign_id and phase must be strings"):
+        RequestBudget(path, run_id="a", campaign_id=1, phase="smoke")
+    with pytest.raises(ValueError, match="campaign_id and phase must be strings"):
+        RequestBudget(path, run_id="a", campaign_id="pilot", phase=1)
