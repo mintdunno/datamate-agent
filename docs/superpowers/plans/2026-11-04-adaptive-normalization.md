@@ -11,7 +11,7 @@
 **Spec:** docs/superpowers/specs/2026-11-04-adaptive-normalization-design.md, revision 3, updated for the user's Polars-only decision on 2026-11-05, retaining revision 2's approved simplification. Read both documents. Source authority remains the active split's rulebook/README/calendar and official competition rules; uncorrected v3 examples do not override them.
 
 **Status:** Revision 3 retains Polars and removes planned Pandas usage; product
-implementation started on 2026-11-05. Tasks 1–3 and Task 18 are complete; remaining tasks continue on the feature branch. The 24-task structure and existing execution method
+implementation started on 2026-11-05. Tasks 1–3, 5 and 18 are complete; remaining tasks continue on the feature branch. The 24-task structure and existing execution method
 are retained. The revision record below distinguishes spec changes from implementation choices.
 
 ## Global Constraints
@@ -283,8 +283,8 @@ assert unknown_proof_evidence_status == "UNRESOLVED"
 **Files:** Modify src/datamate/preparation/catalog.py, src/datamate/preparation/models.py, src/datamate/preparation/storage.py, tests/test_catalog.py; create tests/test_semantic_bindings.py.
 **Interfaces:** compile_clauses(documents:tuple[SourceFile,...])->tuple[RuleClause,...]; returns an entry for every normative clause, including UNMAPPED/CONFLICT. source_documents retain full original text/hash; clause spans/quote digests bind to it.
 
-- [ ] Write test_all_clauses_preserved_even_when_unmapped and test_source_quote_hash_and_split_are_bound. Assert every input clause appears once; bad quote/span/hash rejected; no train-rule fallback for another split.
-- [ ] Add test_question_industry_general_readme_precedence: explicit permitted question override and industry special rule win defaults; README cannot override higher rules. Source declarations remain data, not executable instructions.
+- [x] Write test_all_clauses_preserved_even_when_unmapped and test_source_quote_hash_and_split_are_bound. Assert every input clause appears once; bad quote/span/hash rejected; no train-rule fallback for another split.
+- [x] Add test_question_industry_general_readme_precedence: explicit permitted question override and industry special rule win defaults; README cannot override higher rules. Source declarations remain data, not executable instructions.
 
 ```python
 assert persisted_clause_ids == input_clause_ids
@@ -294,10 +294,10 @@ assert stale_quote_accepted is False
 assert other_split_used_train_default is False
 ```
 
-- [ ] Run uv run --locked pytest tests/test_catalog.py tests/test_semantic_bindings.py -q; expect missing clause status/precedence behavior.
-- [ ] Extend current Markdown section logic with typed supported declarations and unresolved records, not a hardcoded universal industry list. Persist source text before binding, record conflicts and dependencies.
-- [ ] Re-run tests with an unfamiliar synthetic clause; it must be visible/unmapped, not silently discarded.
-- [ ] Commit: feat(preparation): compile source clauses with explicit authority and uncertainty.
+- [x] Run uv run --locked pytest tests/test_catalog.py tests/test_semantic_bindings.py -q; expect missing clause status/precedence behavior.
+- [x] Extend current Markdown section logic with typed supported declarations and unresolved records, not a hardcoded universal industry list. Persist source text before binding, record conflicts and dependencies.
+- [x] Re-run tests with an unfamiliar synthetic clause; it must be visible/unmapped, not silently discarded.
+- [x] Commit: feat(preparation): compile source clauses with explicit authority and uncertainty.
 
 ### Task 6: Roles, grain, capabilities and restricted measure policies (P2)
 

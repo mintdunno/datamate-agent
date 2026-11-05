@@ -3,6 +3,7 @@
 import hashlib
 import json
 from collections.abc import Iterator
+from dataclasses import asdict
 from datetime import date, datetime, time
 from decimal import Decimal
 from itertools import islice
@@ -14,6 +15,7 @@ from datamate.preparation.models import (
     LineageEdge,
     RawDisposition,
     RawRecord,
+    RuleClause,
     SourceFile,
     SourceRow,
     SourceTable,
@@ -237,4 +239,45 @@ def store_lineage(db: DuckDBPyConnection, edge: LineageEdge) -> None:
     db.execute(
         "INSERT INTO meta.lineage VALUES (?,?,?,?)",
         [edge.fact_id, edge.record_id, edge.column_id, edge.step_id],
+    )
+
+
+def store_clauses(db: DuckDBPyConnection, clauses: tuple[RuleClause, ...]) -> None:
+    """Persist complete source documents once and every clause, including unknowns."""
+    db.execute("""CREATE TABLE IF NOT EXISTS meta.source_documents(
+        split_id VARCHAR,source VARCHAR,source_sha256 VARCHAR,text VARCHAR NOT NULL,
+        PRIMARY KEY(split_id,source,source_sha256))""")
+    db.execute("""CREATE TABLE IF NOT EXISTS meta.clauses(
+        clause_id VARCHAR PRIMARY KEY,split_id VARCHAR,source VARCHAR,source_sha256 VARCHAR,
+        line_start BIGINT,line_end BIGINT,quote VARCHAR,quote_sha256 VARCHAR,
+        section VARCHAR,authority VARCHAR,industry_scope VARCHAR,status VARCHAR,
+        declaration_json JSON,dependencies_json JSON,conflicts_json JSON)""")
+    documents = {clause.source_document for clause in clauses}
+    for document in sorted(documents, key=lambda value: (value.split_id, value.source)):
+        db.execute(
+            "INSERT INTO meta.source_documents VALUES (?,?,?,?) ON CONFLICT DO NOTHING",
+            [document.split_id, document.source, document.sha256, document.text],
+        )
+    db.executemany(
+        "INSERT INTO meta.clauses VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [
+            (
+                clause.clause_id,
+                clause.source_document.split_id,
+                clause.source_document.source,
+                clause.source_document.sha256,
+                clause.line_start,
+                clause.line_end,
+                clause.quote,
+                clause.quote_sha256,
+                clause.section,
+                clause.authority,
+                clause.industry_scope,
+                clause.status,
+                None if clause.declaration is None else _json(asdict(clause.declaration)),
+                _json(clause.dependencies),
+                _json(clause.conflicts_with),
+            )
+            for clause in clauses
+        ],
     )

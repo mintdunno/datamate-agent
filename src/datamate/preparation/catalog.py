@@ -124,12 +124,17 @@ def _declaration(quote: str) -> ClauseDeclaration | None:
     return None
 
 
-def compile_clauses(documents: tuple[SourceFile, ...]) -> tuple[RuleClause, ...]:
+def compile_clauses(
+    documents: tuple[SourceFile, ...], *, split_id: str | None = None
+) -> tuple[RuleClause, ...]:
     """Compile exact active-split source clauses; unknown semantics remain visible."""
     rulebooks = [document for document in documents if document.relative_path == "rulebook.md"]
     if len(rulebooks) != 1:
         raise ValueError("exactly one active split rulebook is required")
     split_root = rulebooks[0].path.parent.resolve(strict=True)
+    split_id = split_root.name if split_id is None else split_id
+    if not split_id.strip() or any(char in split_id for char in "/\\:\x00"):
+        raise ValueError("invalid active split identity")
     clauses = []
     for source in documents:
         if source.path.suffix.lower() != ".md":
@@ -144,20 +149,16 @@ def compile_clauses(documents: tuple[SourceFile, ...]) -> tuple[RuleClause, ...]
         if hashlib.sha256(raw).hexdigest() != source.sha256:
             raise ValueError("source document hash changed")
         text = raw.decode("utf-8")
-        document = SourceDocument(split_root.name, source.relative_path, source.sha256, text)
-        source_lines = text.splitlines(keepends=True)
+        document = SourceDocument(split_id, source.relative_path, source.sha256, text)
         for first, last, quote, section, industry in _markdown_blocks(text):
             authority = (
                 "readme"
                 if source.relative_path != "rulebook.md"
                 else ("industry" if industry is not None else "general")
             )
-            next_line = source_lines[last] if last < len(source_lines) else ""
-            markup_only = bool(
-                _HEADING.match(quote)
-                or _TABLE_SEPARATOR.match(quote)
-                or (_TABLE_ROW.match(quote) and _TABLE_SEPARATOR.match(next_line))
-            )
+            # Headings and table labels can contain substantive rules. Only a
+            # pure separator is demonstrably syntax without normative content.
+            markup_only = bool(_TABLE_SEPARATOR.fullmatch(quote.strip()))
             declaration = None if markup_only else _declaration(quote)
             status = (
                 "NOT_APPLICABLE"

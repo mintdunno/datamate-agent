@@ -55,11 +55,11 @@ def test_all_clauses_preserved_even_when_unmapped(tmp_path):
     ]
     assert len({clause.clause_id for clause in clauses}) == 7
     assert [clause.status for clause in clauses] == [
-        "NOT_APPLICABLE",
+        "UNMAPPED",
         "MAPPED",
         "UNMAPPED",
         "UNMAPPED",
-        "NOT_APPLICABLE",
+        "UNMAPPED",
         "NOT_APPLICABLE",
         "UNMAPPED",
     ]

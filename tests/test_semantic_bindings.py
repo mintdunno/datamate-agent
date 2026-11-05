@@ -80,3 +80,37 @@ def test_resolver_rejects_clauses_from_another_split(tmp_path):
         resolve_declaration(roots[0], "week_start", split_id="private")
     with pytest.raises(ValueError, match="split"):
         resolve_declaration(roots[0] + roots[1], "week_start", split_id="private")
+
+
+def test_snapshot_directory_name_does_not_replace_explicit_split_identity(tmp_path):
+    root = tmp_path / "private-bytes"
+    root.mkdir()
+    path = root / "rulebook.md"
+    path.write_text("# Exclude returned orders\nweek_start: monday\n", encoding="utf-8")
+    clauses = compile_clauses(
+        (SourceFile(path, "rulebook.md", sha256_file(path)),), split_id="train"
+    )
+    assert {c.source_document.split_id for c in clauses} == {"train"}
+    assert clauses[0].status == "UNMAPPED"
+    assert (
+        resolve_declaration(clauses, "week_start", split_id="train").declaration.value == "monday"
+    )
+
+
+def test_clause_storage_preserves_full_documents_and_unresolved_normative_text(tmp_path):
+    import duckdb
+
+    from datamate.preparation.storage import create_storage, store_clauses
+
+    path = tmp_path / "rulebook.md"
+    text = "# Exclude returns\nUnfamiliar business condition.\n"
+    path.write_bytes(text.encode())
+    clauses = compile_clauses((SourceFile(path, "rulebook.md", sha256_file(path)),))
+    with duckdb.connect() as db:
+        create_storage(db)
+        store_clauses(db, clauses)
+        assert db.execute("SELECT text FROM meta.source_documents").fetchall() == [(text,)]
+        assert {row[0] for row in db.execute("SELECT clause_id FROM meta.clauses").fetchall()} == {
+            clause.clause_id for clause in clauses
+        }
+        assert db.execute("SELECT DISTINCT status FROM meta.clauses").fetchall() == [("UNMAPPED",)]
