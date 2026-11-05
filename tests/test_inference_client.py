@@ -89,3 +89,87 @@ def test_profile_rejects_control_overrides_and_unsupported_tools(tmp_path):
         assert budget.snapshot()["run_attempts"] == 0
 
     asyncio.run(run())
+
+
+def test_campaign_counts_retry_repair_and_reference_calls(tmp_path):
+    from datamate.inference.budget import BudgetExceeded, CampaignPolicy, register_campaign
+
+    path = tmp_path / "accounting.sqlite"
+    register_campaign(path, CampaignPolicy("pilot", total_limit=3, phase_limits={"development": 3}))
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx.Response(429, headers={"Retry-After": "0"})
+        return httpx.Response(
+            200,
+            json={
+                "id": f"response-{len(calls)}",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "selected-model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "ok"},
+                    }
+                ],
+                "usage": {"prompt_tokens": 11, "completion_tokens": 2, "total_tokens": 13},
+            },
+        )
+
+    async def run():
+        proposal = RequestBudget(
+            path, run_id="proposal", campaign_id="pilot", phase="development", rpm=100
+        )
+        async with inference_model(
+            profile(), proposal, transport=httpx.MockTransport(respond), max_retries=1
+        ) as model:
+            assert (await Agent(model).run("proposal")).output == "ok"
+            assert (await Agent(model).run("format repair")).output == "ok"
+        reference = RequestBudget(
+            path, run_id="reference", campaign_id="pilot", phase="development", rpm=100
+        )
+        async with inference_model(
+            profile(), reference, transport=httpx.MockTransport(respond), max_retries=1
+        ) as model:
+            with pytest.raises(BudgetExceeded):
+                await Agent(model).run("reference judgement")
+        return proposal.snapshot(), reference.snapshot()
+
+    proposal, reference = asyncio.run(run())
+    assert len(calls) == 3
+    assert proposal["campaign_attempts"] == 3
+    assert proposal["run_attempts"] == 3
+    assert reference["campaign_remaining"] == 0
+    assert proposal["response_metadata_complete"]
+    assert proposal["token_usage_status"] == "partial_or_unavailable"
+
+
+def test_campaign_context_rejection_does_not_consume_attempt(tmp_path):
+    from datamate.inference.budget import BudgetTransport, CampaignPolicy, register_campaign
+
+    path = tmp_path / "accounting.sqlite"
+    register_campaign(path, CampaignPolicy("pilot"))
+    budget = RequestBudget(path, run_id="proposal", campaign_id="pilot", phase="smoke")
+    calls = []
+
+    async def run():
+        transport = GuardedTransport(
+            BudgetTransport(
+                httpx.MockTransport(lambda req: calls.append(req)), budget, max_retries=1
+            ),
+            profile(input_byte_limit=1000),
+        )
+        with pytest.raises(ContextBudgetExceeded):
+            await transport.handle_async_request(
+                httpx.Request("POST", "http://localhost", content=b"x" * 1001)
+            )
+        await transport.aclose()
+
+    asyncio.run(run())
+    assert calls == []
+    assert budget.snapshot()["run_attempts"] == 0
+    assert budget.snapshot()["campaign_attempts"] == 0

@@ -1,4 +1,5 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import pytest
@@ -83,3 +84,101 @@ def test_transport_budget_prevents_retry(tmp_path):
     with pytest.raises(BudgetExceeded):
         asyncio.run(run())
     assert len(calls) == 1
+
+
+def _acquire_result(budget):
+    try:
+        asyncio.run(budget.acquire())
+    except BudgetExceeded as exc:
+        return exc
+    return None
+
+
+def test_campaign_cap_is_atomic_across_run_ids_and_phases(tmp_path):
+    from datamate.inference.budget import CampaignPolicy, register_campaign
+
+    path = tmp_path / "budget.sqlite"
+    register_campaign(path, CampaignPolicy("pilot"))
+
+    phases = ("smoke", "development", "final")
+    budgets = [
+        RequestBudget(
+            path,
+            run_id=f"run-{i}",
+            campaign_id="pilot",
+            phase=phases[i % 3],
+            rpm=1000,
+            daily_limit=1000,
+            run_limit=1000,
+            max_wait_seconds=5,
+        )
+        for i in range(180)
+    ]
+    with ThreadPoolExecutor(max_workers=12) as workers:
+        results = list(workers.map(lambda budget: _acquire_result(budget), budgets))
+    assert sum(result is None for result in results) == 120
+    assert sum(isinstance(result, BudgetExceeded) for result in results) == 60
+    snapshot = RequestBudget(
+        path, run_id="observer", campaign_id="pilot", phase="smoke", rpm=1000
+    ).snapshot()
+    assert snapshot["campaign_attempts"] == 120
+    assert snapshot["phase_attempts"] == 20
+    assert snapshot["campaign_remaining"] == 0
+    assert snapshot["phase_remaining"] == 0
+    for phase, expected in (("development", 60), ("final", 40)):
+        other = RequestBudget(
+            path, run_id=f"observer-{phase}", campaign_id="pilot", phase=phase, rpm=1000
+        ).snapshot()
+        assert other["phase_attempts"] == expected
+        assert other["phase_remaining"] == 0
+
+
+def test_reopening_cannot_enlarge_campaign(tmp_path):
+    from datamate.inference.budget import CampaignPolicy, register_campaign
+
+    path = tmp_path / "budget.sqlite"
+    register_campaign(path, CampaignPolicy("pilot"))
+    with pytest.raises(ValueError, match="campaign policy"):
+        register_campaign(path, CampaignPolicy("pilot", total_limit=121))
+    with pytest.raises(ValueError, match="campaign policy"):
+        register_campaign(
+            path,
+            CampaignPolicy("pilot", phase_limits={"smoke": 21, "development": 60, "final": 40}),
+        )
+    budget = RequestBudget(path, run_id="a", campaign_id="pilot", phase="smoke")
+    asyncio.run(budget.acquire())
+    with pytest.raises(ValueError, match="run"):
+        RequestBudget(path, run_id="a", campaign_id="pilot", phase="final")
+
+
+def test_old_attempts_still_count_toward_utc_day(tmp_path):
+    from datamate.inference.budget import CampaignPolicy, register_campaign
+
+    path = tmp_path / "budget.sqlite"
+    old = RequestBudget(path, run_id="legacy", rpm=100, daily_limit=3)
+    asyncio.run(old.acquire())
+    asyncio.run(old.acquire())
+    register_campaign(path, CampaignPolicy("pilot"))
+    new = RequestBudget(
+        path, run_id="new", campaign_id="pilot", phase="smoke", rpm=100, daily_limit=3
+    )
+    asyncio.run(new.acquire())
+    assert new.snapshot()["day_attempts"] == 3
+    assert new.snapshot()["day_remaining"] == 0
+    with pytest.raises(BudgetExceeded):
+        asyncio.run(
+            RequestBudget(
+                path, run_id="newer", campaign_id="pilot", phase="smoke", rpm=100, daily_limit=3
+            ).acquire()
+        )
+    assert new.snapshot()["campaign_attempts"] == 1
+
+
+def test_campaign_transport_limits_retry_count(tmp_path):
+    from datamate.inference.budget import CampaignPolicy, register_campaign
+
+    path = tmp_path / "budget.sqlite"
+    register_campaign(path, CampaignPolicy("pilot"))
+    budget = RequestBudget(path, run_id="run", campaign_id="pilot", phase="smoke")
+    with pytest.raises(ValueError, match="one transport retry"):
+        BudgetTransport(httpx.MockTransport(lambda request: httpx.Response(200)), budget)
