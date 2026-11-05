@@ -4,6 +4,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from decimal import Decimal
+from hashlib import sha256
 from pathlib import Path
 from typing import Literal, Self
 
@@ -44,6 +45,69 @@ class SourceFile:
     path: Path
     relative_path: str
     sha256: str
+
+
+_WEEKDAYS = frozenset(
+    {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"}
+)
+
+
+@dataclass(frozen=True)
+class SourceDocument:
+    split_id: str
+    source: str
+    sha256: str
+    text: str
+
+    def __post_init__(self) -> None:
+        if (
+            not self.split_id
+            or not self.source
+            or sha256(self.text.encode("utf-8")).hexdigest() != self.sha256
+        ):
+            raise ValueError("source document hash or identity is invalid")
+
+
+@dataclass(frozen=True)
+class ClauseDeclaration:
+    kind: Literal["week_start"]
+    value: str
+
+    def __post_init__(self) -> None:
+        if self.kind != "week_start" or self.value not in _WEEKDAYS:
+            raise ValueError("unsupported clause declaration")
+
+
+@dataclass(frozen=True)
+class RuleClause:
+    clause_id: str
+    source_document: SourceDocument
+    line_start: int
+    line_end: int
+    quote: str
+    quote_sha256: str
+    section: str | None
+    authority: Literal["general", "industry", "readme"]
+    industry_scope: str | None
+    status: Literal["MAPPED", "UNMAPPED", "CONFLICT", "NOT_APPLICABLE"]
+    declaration: ClauseDeclaration | None = None
+    dependencies: tuple[str, ...] = ()
+    conflicts_with: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        lines = self.source_document.text.splitlines(keepends=True)
+        if not 1 <= self.line_start <= self.line_end <= len(lines):
+            raise ValueError("clause line span is invalid")
+        if self.quote != "".join(lines[self.line_start - 1 : self.line_end]):
+            raise ValueError("clause quote does not match source span")
+        if sha256(self.quote.encode("utf-8")).hexdigest() != self.quote_sha256:
+            raise ValueError("clause quote hash is invalid")
+        if self.status == "MAPPED" and self.declaration is None:
+            raise ValueError("mapped clause requires a typed declaration")
+        if self.status == "UNMAPPED" and self.declaration is not None:
+            raise ValueError("unmapped clause cannot carry a declaration")
+        if self.authority != "industry" and self.industry_scope is not None:
+            raise ValueError("industry scope requires industry authority")
 
 
 @dataclass(frozen=True)
