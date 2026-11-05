@@ -8,11 +8,11 @@ from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation, localcontext
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
 from pydantic import Field, model_validator
 
-from datamate.contracts.base import ContractModel
+from datamate.contracts.base import ContractModel, NonblankString, Sha256
 from datamate.preparation.models import EvidenceRef as Evidence
 from datamate.preparation.models import ParseCandidate, RawValue, SourceRow, TypedValue
 
@@ -45,6 +45,44 @@ class TablePlan(ContractModel):
             if not self.group_key or self.evidence is None:
                 raise ValueError("group transforms require an order key and source evidence")
         return self
+
+
+class PreserveRawOperation(ContractModel):
+    name: Literal["preserve_raw"] = "preserve_raw"
+    version: Literal["1"] = "1"
+
+
+class TrimTextOperation(ContractModel):
+    name: Literal["trim_text"] = "trim_text"
+    version: Literal["1"] = "1"
+    columns: tuple[NonblankString, ...] = Field(min_length=1)
+
+
+class CleaningStep(ContractModel):
+    table_id: NonblankString
+    operation: Annotated[PreserveRawOperation | TrimTextOperation, Field(discriminator="name")]
+    binding_ids: tuple[Sha256, ...] = ()
+    evidence: tuple[Evidence, ...] = ()
+
+    @model_validator(mode="after")
+    def transformation_authority(self) -> Self:
+        if self.operation.name != "preserve_raw" and (not self.binding_ids or not self.evidence):
+            raise ValueError("transformations require accepted bindings and source evidence")
+        return self
+
+    @property
+    def step_id(self) -> str:
+        return hashlib.sha256(
+            json.dumps(self.model_dump(mode="json"), sort_keys=True).encode()
+        ).hexdigest()
+
+
+class CleaningPlan(ContractModel):
+    version: Literal["cleaning-v1"] = "cleaning-v1"
+    bindings_digest: Sha256
+    profile_digests: tuple[Sha256, ...]
+    steps: tuple[CleaningStep, ...] = Field(min_length=1, max_length=64)
+    rollback: Literal["reject_candidate"] = "reject_candidate"
 
 
 def encoded(value: object) -> dict:

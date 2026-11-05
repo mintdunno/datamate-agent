@@ -12,7 +12,7 @@ from pydantic import Field, model_validator
 
 from datamate.contracts.base import ContractModel, DayString, NonblankString, Sha256
 
-RawValue = str | int | float | bool | bytes | date | datetime | time | None
+RawValue = str | int | float | Decimal | bool | bytes | date | datetime | time | None
 
 
 @dataclass(frozen=True)
@@ -159,7 +159,7 @@ class StagedTable:
     declared_types: tuple[str | None, ...] = ()
 
 
-TypedValue = RawValue | Decimal
+TypedValue = RawValue
 
 
 @dataclass(frozen=True)

@@ -11,7 +11,7 @@
 **Spec:** docs/superpowers/specs/2026-11-04-adaptive-normalization-design.md, revision 3, updated for the user's Polars-only decision on 2026-11-05, retaining revision 2's approved simplification. Read both documents. Source authority remains the active split's rulebook/README/calendar and official competition rules; uncorrected v3 examples do not override them.
 
 **Status:** Revision 3 retains Polars and removes planned Pandas usage; product
-implementation started on 2026-11-05. Tasks 1–3, 5–7 and 18 are complete; remaining tasks continue on the feature branch. The 24-task structure and existing execution method
+implementation started on 2026-11-05. Tasks 1–3, 5–8 and 18 are complete; remaining tasks continue on the feature branch. The 24-task structure and existing execution method
 are retained. The revision record below distinguishes spec changes from implementation choices.
 
 ## Global Constraints
@@ -345,8 +345,8 @@ assert similarity_alone_accepted_binding_count == 0
 **Files:** Create src/datamate/preparation/operations.py, tests/test_cleaning_operations.py; modify src/datamate/preparation/normalization.py. Reuse the existing Polars dependency; this task adds no dependency or lockfile change.
 **Interfaces:** OperationState(db:DuckDBPyConnection,boundary_id:str) with reset_boundary(boundary_id:str)->None and close()->None; execute_batch(batch:Sequence[RawRecord],step:CleaningStep,state:OperationState)->BatchResult; validate_plan(plan:CleaningPlan,bindings:SemanticBindings)->None. This directly accepts iter_raw_batches output from Task 2. BatchResult in src/datamate/preparation/operations.py contains facts:tuple[CandidateFact,...], dispositions:tuple[RawDisposition,...], lineage:tuple[LineageEdge,...], events:tuple[TransformEvent,...]. Operators use existing Polars for supported typed columns and pure Python for raw mixed values/parsers, with one reviewed operation/version lookup. State owns/resets spill tables, not the caller's connection; close cleans its temporary state on success/failure. Raw records/IDs remain immutable, and no DataFrame is passed through the SLM contract.
 
-- [ ] Write test_batch_roundtrip_preserves_decimal_none_leading_zero_ids_dates_and_bytes and test_unregistered_operation_or_callable_parameters_fail_closed. Assert Decimal('0.10'),None,'001',date/time/bytes survive with no NaN/float conversion; raw columns/IDs are unchanged.
-- [ ] Add test_polars_operations_preserve_mixed_raw_values_and_exact_decimal_scale: keep heterogeneous native/text raw values tagged and unchanged, build only explicitly typed lossless working columns, and use pure-Python typed parsing for values outside that column contract. Unsupported precision remains raw/blocked under the existing policy; do not silently cast it to float/string or collapse None and blank.
+- [x] Write test_batch_roundtrip_preserves_decimal_none_leading_zero_ids_dates_and_bytes and test_unregistered_operation_or_callable_parameters_fail_closed. Assert Decimal('0.10'),None,'001',date/time/bytes survive with no NaN/float conversion; raw columns/IDs are unchanged.
+- [x] Add test_polars_operations_preserve_mixed_raw_values_and_exact_decimal_scale: keep heterogeneous native/text raw values tagged and unchanged, build only explicitly typed lossless working columns, and use pure-Python typed parsing for values outside that column contract. Unsupported precision remains raw/blocked under the existing policy; do not silently cast it to float/string or collapse None and blank.
 
 ```python
 assert roundtrip_values == [Decimal("0.10"), None, "001", date(2025, 1, 2), b"\x00"]
@@ -359,10 +359,10 @@ assert accepted_lossy_cast_count == 0
 assert none_and_blank_remain_distinct is True
 ```
 
-- [ ] Run uv run --locked pytest tests/test_cleaning_operations.py -q; expect missing registry/batch API.
-- [ ] Implement typed record-batch dispatch and parameter models using the existing Polars/Python stack. Reuse pure parsers and source records, with explicit schemas for any Polars working columns; no implicit supertype coercion of raw cells, Pandas conversion or pl.Object wrapper for the entire raw payload. Do not deserialize callables/executable strings as registered steps or introduce a generic engine adapter.
-- [ ] Run task tests, existing normalization/loaders tests and the full suite for the shared batch-contract change. Keep Polars and its locked version; record actual behavior/resource evidence without claiming a speedup from library choice alone.
-- [ ] Commit: feat(preparation): introduce lossless typed batch operation registry.
+- [x] Run uv run --locked pytest tests/test_cleaning_operations.py -q; expect missing registry/batch API.
+- [x] Implement typed record-batch dispatch and parameter models using the existing Polars/Python stack. Reuse pure parsers and source records, with explicit schemas for any Polars working columns; no implicit supertype coercion of raw cells, Pandas conversion or pl.Object wrapper for the entire raw payload. Do not deserialize callables/executable strings as registered steps or introduce a generic engine adapter.
+- [x] Run task tests, existing normalization/loaders tests and the full suite for the shared batch-contract change. Keep Polars and its locked version; record actual behavior/resource evidence without claiming a speedup from library choice alone.
+- [x] Commit: feat(preparation): introduce lossless typed batch operation registry.
 
 ### Task 9: Mixed-pattern numeric, datetime, quantity and ID parsers (P3)
 
