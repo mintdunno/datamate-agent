@@ -170,6 +170,15 @@ class CandidateFact:
 
 
 @dataclass(frozen=True)
+class ParseCandidate:
+    value: TypedValue
+    grammar: str
+    unit: str | None = None
+    context_requirements: tuple[str, ...] = ()
+    precision_supported: bool = True
+
+
+@dataclass(frozen=True)
 class RawDisposition:
     record_id: str
     kind: Literal["retained", "structural", "duplicate", "quarantined", "unsupported"]

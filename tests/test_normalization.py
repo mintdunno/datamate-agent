@@ -146,3 +146,160 @@ def test_uncached_formula_is_not_a_blank_group_field_or_order_key():
     assert result[1].values == ("A", None)
     assert result[2].values == (None, "Hoa")
     assert result[3].values == (None, None)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("532.000đ", Decimal("532000")),
+        ("4,544tr", Decimal("4544000")),
+        ("294,7703tr", Decimal("294770300")),
+        ("8tr399", Decimal("8399000")),
+        ("16 076", Decimal("16076")),
+        ("500k", Decimal("500000")),
+        ("(532.000đ)", Decimal("-532000")),
+        ("-4,544tr", Decimal("-4544000")),
+    ],
+)
+def test_money_candidates_preserve_literal_scale_and_sign(raw, expected):
+    from datamate.preparation.normalization import parse_candidates
+
+    candidates = parse_candidates(raw, "money", (), {})
+    assert expected in [item.value for item in candidates if item.precision_supported]
+
+
+def test_unsuffixed_grouped_spelling_keeps_both_scale_hypotheses():
+    from datamate.preparation.normalization import parse_candidates
+
+    candidates = parse_candidates("1.000", "money", (), {"source_total": "1000"})
+    assert {item.value for item in candidates} == {Decimal("1.000"), Decimal("1000")}
+    assert len(candidates) == 2
+    assert all(item.grammar for item in candidates)
+
+
+def test_quantity_units_native_decimal_and_precision_are_lossless():
+    from datamate.preparation.normalization import parse_candidates
+
+    quantity = parse_candidates("-2 kg", "quantity", (), {})
+    assert [(item.value, item.unit) for item in quantity] == [(Decimal("-2"), "kg")]
+    native = Decimal("1E-7")
+    assert parse_candidates(native, "money", (), {})[0].value.as_tuple().exponent == -7
+    unsupported = parse_candidates("1." + "0" * 38, "money", (), {})
+    assert unsupported and all(not item.precision_supported for item in unsupported)
+    assert all(item.value == "1." + "0" * 38 for item in unsupported)
+    assert parse_candidates(True, "money", (), {}) == ()
+    assert parse_candidates(float("inf"), "money", (), {}) == ()
+    assert parse_candidates(Decimal("NaN"), "money", (), {}) == ()
+    assert parse_candidates(None, "money", (), {})[0].value is None
+    assert parse_candidates("   ", "quantity", (), {})[0].value == "   "
+
+
+def test_id_candidates_keep_raw_and_trimmed_leading_zero_forms():
+    from datamate.preparation.normalization import parse_candidates
+
+    candidates = parse_candidates(" 001 ", "id", (), {})
+    assert [item.value for item in candidates] == [" 001 ", "001"]
+    assert "collision_check" in candidates[1].context_requirements
+    assert parse_candidates("001", "id", (), {})[0].value == "001"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("2025-06-03", date(2025, 6, 3)),
+        ("3/6/2025", date(2025, 6, 3)),
+        ("3 thg 6 2025", date(2025, 6, 3)),
+    ],
+)
+def test_date_candidates_parse_iso_and_vietnamese_dmy(raw, expected):
+    from datamate.preparation.normalization import parse_candidates
+
+    assert [item.value for item in parse_candidates(raw, "date", (), {})] == [expected]
+
+
+def test_incomplete_source_date_uses_only_sheet_year():
+    from datamate.preparation.normalization import parse_candidates
+
+    assert parse_candidates("3/6", "date", (), {}) == ()
+    assert parse_candidates("3/6", "date", (), {"sheet_year": 2025})[0].value == date(2025, 6, 3)
+    with pytest.raises(ValueError, match="context"):
+        parse_candidates("3/6", "date", (), {"question_year": 2026})
+
+
+def test_excel_serials_require_epoch_and_reject_1900_phantom_day():
+    from datetime import datetime
+
+    from datamate.preparation.normalization import parse_candidates
+
+    windows = {"workbook_epoch": datetime(1899, 12, 30)}
+    mac = {"workbook_epoch": datetime(1904, 1, 1)}
+    assert parse_candidates(61, "date", (), {}) == ()
+    assert parse_candidates(61, "date", (), windows)[0].value == date(1900, 3, 1)
+    assert parse_candidates(0, "date", (), mac)[0].value == date(1904, 1, 1)
+    assert parse_candidates(60, "date", (), windows) == ()
+    assert parse_candidates(Decimal("60.5"), "datetime", (), windows) == ()
+    assert parse_candidates(Decimal("61.5"), "datetime", (), windows)[0].value == datetime(
+        1900, 3, 1, 12
+    )
+    assert parse_candidates("1.25", "datetime", (), mac)[0].value == datetime(1904, 1, 2, 6)
+
+
+def test_date_only_input_never_fabricates_midnight_timestamp():
+    from datetime import datetime
+
+    from datamate.preparation.normalization import parse_candidates
+
+    native = date(2025, 6, 3)
+    candidates = parse_candidates(native, "datetime", (), {})
+    assert not any(isinstance(item.value, datetime) for item in candidates)
+    assert not any(
+        isinstance(item.value, datetime)
+        for item in parse_candidates("2025-06-03", "datetime", (), {})
+    )
+    timestamp = datetime(2025, 6, 3, 14, 5)
+    assert parse_candidates(timestamp, "datetime", (), {})[0].value == timestamp
+
+
+def test_vietnamese_datetime_text_keeps_time_and_sheet_year():
+    from datetime import datetime
+
+    from datamate.preparation.normalization import parse_candidates
+
+    assert parse_candidates("3/6/2025 14:05:09", "datetime", (), {})[0].value == datetime(
+        2025, 6, 3, 14, 5, 9
+    )
+    assert parse_candidates("3/6 14:05", "datetime", (), {"sheet_year": 2025})[0].value == datetime(
+        2025, 6, 3, 14, 5
+    )
+    assert parse_candidates("31/2/2025", "date", (), {}) == ()
+
+
+def test_excel_serial_fraction_beyond_supported_precision_stays_raw():
+    from datetime import datetime
+
+    from datamate.preparation.normalization import parse_candidates
+
+    raw = Decimal("61." + "0" * 37 + "5")
+    candidate = parse_candidates(raw, "datetime", (), {"workbook_epoch": datetime(1899, 12, 30)})[0]
+    assert candidate.value is raw
+    assert not candidate.precision_supported
+    assert "datetime_precision" in candidate.context_requirements
+
+
+def test_very_large_native_and_compact_numbers_stay_raw_without_int_conversion_errors():
+    from datamate.preparation.normalization import parse_candidates
+
+    native = 10**5000
+    compact = "9" * 5000 + "tr001"
+    for raw in (native, compact):
+        candidate = parse_candidates(raw, "money", (), {})[0]
+        assert candidate.value == raw
+        assert not candidate.precision_supported
+
+
+def test_debt_note_k_candidate_requires_note_scope():
+    from datamate.preparation.normalization import parse_candidates
+
+    candidates = parse_candidates("nợ 500k", "money", (), {})
+    assert [candidate.value for candidate in candidates] == [Decimal("500000")]
+    assert "debt_note_scope" in candidates[0].context_requirements
