@@ -11,7 +11,7 @@
 **Spec:** docs/superpowers/specs/2026-11-04-adaptive-normalization-design.md, revision 3, updated for the user's Polars-only decision on 2026-11-05, retaining revision 2's approved simplification. Read both documents. Source authority remains the active split's rulebook/README/calendar and official competition rules; uncorrected v3 examples do not override them.
 
 **Status:** Revision 3 retains Polars and removes planned Pandas usage; product
-implementation started on 2026-11-05. Tasks 1–2 are complete; Tasks 3–24 remain (Task 18 is in parallel integration). The 24-task structure and existing execution method
+implementation started on 2026-11-05. Tasks 1–3 and Task 18 are complete; remaining tasks continue on the feature branch. The 24-task structure and existing execution method
 are retained. The revision record below distinguishes spec changes from implementation choices.
 
 ## Global Constraints
@@ -237,8 +237,8 @@ assert original_formula == "=A1+B1"
 **Files:** Modify src/datamate/preparation/profiling.py, src/datamate/preparation/storage.py; create tests/test_normalization_profiles.py.
 **Interfaces:** profile_table(db,table_id:str,*,batch_size:int=1000)->TableProfile; select_evidence(profile:TableProfile,*,seed:int,max_samples:int)->list[SampleRef]. No model/candidate/evaluator inputs.
 
-- [ ] Write test_profiles_scan_every_record_with_bounded_samples, test_profile_is_chunk_size_independent and test_cardinality_exactness_is_explicit. Assert same counts/digests for batches 1/7/1000; rare formats represented;<=configured sample cap; exact vs lower-bound distinct markers honest.
-- [ ] Add test_candidate_relations_are_not_accepted_keys: nonunique overlapping columns remain proposals; no row payload in source-only summary unless explicitly selected.
+- [x] Write test_profiles_scan_every_record_with_bounded_samples, test_profile_is_chunk_size_independent and test_cardinality_exactness_is_explicit. Assert same counts/digests for batches 1/7/1000; rare formats represented;<=configured sample cap; exact vs lower-bound distinct markers honest.
+- [x] Add test_candidate_relations_are_not_accepted_keys: nonunique overlapping columns remain proposals; no row payload in source-only summary unless explicitly selected.
 
 ```python
 assert full_row_counts == [1003, 1003, 1003]  # batch sizes 1, 7, 1000
@@ -248,10 +248,10 @@ assert rare_pattern_id in sampled_pattern_ids
 assert accepted_key_count == 0  # overlapping, nonunique fixture
 ```
 
-- [ ] Run uv run --locked pytest tests/test_normalization_profiles.py -q; expect missing APIs/format statistics.
-- [ ] Decouple profiles from PreparedRow, scan staged raw instead of exhausted loader iterators, retain correct Polars counters and add shape/format distributions, parse candidates and candidate relationship coverage. Bound samples/distinct examples and keep rare-pattern counts.
-- [ ] Run task tests and tests/test_preparation.py::test_all_rows_and_profile_cardinality_cap_are_explicit. Check all records are profiled without retaining every unique value in Python.
-- [ ] Commit: feat(preparation): add bounded full-data profiles and pattern evidence.
+- [x] Run uv run --locked pytest tests/test_normalization_profiles.py -q; expect missing APIs/format statistics.
+- [x] Decouple profiles from PreparedRow, scan staged raw instead of exhausted loader iterators, retain correct Polars counters and add shape/format distributions, parse candidates and candidate relationship coverage. Bound samples/distinct examples and keep rare-pattern counts.
+- [x] Run task tests and tests/test_preparation.py::test_all_rows_and_profile_cardinality_cap_are_explicit. Check all records are profiled without retaining every unique value in Python.
+- [x] Commit: feat(preparation): add bounded full-data profiles and pattern evidence.
 
 ### Task 4: Blind case selection, proof checks and reference freezing (P0/P1)
 
@@ -571,7 +571,7 @@ assert diagnostic_checkpoint_claims == diagnostic_http_attempts == 0
 **Files:** Modify src/datamate/inference/budget.py; extend tests/test_budget.py, tests/test_inference_client.py.
 **Interfaces:** CampaignPolicy(campaign_id,total_limit=120,phase_limits={smoke:20,development:60,final:40}); register_campaign(path:Path,policy:CampaignPolicy)->None. Extend RequestBudget(...,campaign_id:str|None=None,phase:str|None=None), preserving existing noncampaign callers.
 
-- [ ] Write test_campaign_cap_is_atomic_across_run_ids_and_phases, test_reopening_cannot_enlarge_campaign and test_old_attempts_still_count_toward_utc_day. Concurrent acquisition cannot exceed120; per-phase limits also hold; historical accounting is not reset by migration.
+- [x] Write test_campaign_cap_is_atomic_across_run_ids_and_phases, test_reopening_cannot_enlarge_campaign and test_old_attempts_still_count_toward_utc_day. Concurrent acquisition cannot exceed120; per-phase limits also hold; historical accounting is not reset by migration.
 
 ```python
 assert total_acquired_attempts <= 120
@@ -582,12 +582,12 @@ assert utc_day_attempts_after_migration == historical_attempts + new_attempts
 assert cap_change_rejected is True
 ```
 
-- [ ] Run uv run --locked pytest tests/test_budget.py -q; expect missing campaign methods/schema.
-- [ ] Add transactional campaign/phase policy and attempt linkage to the same SQLite ledger. acquire atomically checks RPM/day/run/campaign/phase and records one actual attempt; reopening same campaign with changed caps fails. Do not label pre-acquire context rejection as a sent attempt.
-- [ ] Keep this as a small migration and direct methods on RequestBudget; preserve historical counters and bind run/campaign/phase consistently. No second ledger, scheduler, experiment registry or event bus. Task 19 checkpoint state uses this same SQLite file.
-- [ ] Test429/transient retries, format repairs, reference NIM calls and restart/run-ID changes against shared limits using MockTransport; max_retries=1 for this campaign, SDK retries0. Snapshot reports actual usage/completeness and current UTC remaining allowance, not old776 arithmetic.
-- [ ] Run budget/client tests and full suite; expect PASS.
-- [ ] Commit: feat(inference): enforce shared normalization campaign limits.
+- [x] Run uv run --locked pytest tests/test_budget.py -q; expect missing campaign methods/schema.
+- [x] Add transactional campaign/phase policy and attempt linkage to the same SQLite ledger. acquire atomically checks RPM/day/run/campaign/phase and records one actual attempt; reopening same campaign with changed caps fails. Do not label pre-acquire context rejection as a sent attempt.
+- [x] Keep this as a small migration and direct methods on RequestBudget; preserve historical counters and bind run/campaign/phase consistently. No second ledger, scheduler, experiment registry or event bus. Task 19 checkpoint state uses this same SQLite file.
+- [x] Test429/transient retries, format repairs, reference NIM calls and restart/run-ID changes against shared limits using MockTransport; max_retries=1 for this campaign, SDK retries0. Snapshot reports actual usage/completeness and current UTC remaining allowance, not old776 arithmetic.
+- [x] Run budget/client tests and full suite; expect PASS.
+- [x] Commit: feat(inference): enforce shared normalization campaign limits.
 
 ### Task 19: Evaluator runner and baseline capture before improvements (P6 infrastructure)
 

@@ -2,12 +2,16 @@
 
 import hashlib
 import json
+import re
 from collections import Counter
 from decimal import Decimal
 
 import polars as pl
+from duckdb import DuckDBPyConnection
 
+from datamate.preparation.models import ColumnProfile, SampleRef, TableProfile
 from datamate.preparation.normalization import PreparedRow, encoded
+from datamate.preparation.storage import iter_raw_batches
 
 
 class TableProfiler:
@@ -104,3 +108,153 @@ class TableProfiler:
                 }
             )
         return results
+
+
+def _shape(value: object) -> str:
+    if not isinstance(value, str):
+        return type(value).__name__
+    text = re.sub(r"[^\W\d_]+", "a", value)
+    text = re.sub(r"\d+", "9", text)
+    return "text:" + text[:96]
+
+
+def profile_table(db: DuckDBPyConnection, table_id: str, *, batch_size: int = 1000) -> TableProfile:
+    info = db.execute(
+        "SELECT columns_json,headers_json,declared_types_json "
+        "FROM meta.source_tables WHERE table_id=?",
+        [table_id],
+    ).fetchone()
+    if info is None:
+        raise ValueError("unknown staged table")
+    columns = json.loads(info[0])
+    headers = dict(zip(columns, json.loads(info[1]), strict=True))
+    declared = json.loads(info[2])
+    declared_types = dict(zip(columns, declared, strict=True)) if declared else {}
+    # Spill per-batch format counts to DuckDB; do not retain unbounded pattern dictionaries.
+    db.execute("""CREATE TABLE IF NOT EXISTS meta.profile_patterns(
+        table_id VARCHAR,column_id VARCHAR,pattern VARCHAR,n BIGINT,sample VARCHAR)""")
+    db.execute("DELETE FROM meta.profile_patterns WHERE table_id=?", [table_id])
+    kinds = Counter()
+    counters = [
+        {"types": Counter(), "null": 0, "blank": 0, "unique": set(), "exact": True} for _ in columns
+    ]
+    for batch in iter_raw_batches(db, table_id, batch_size):
+        kinds.update(record.kind for record in batch)
+        data = [record for record in batch if record.kind == "data"]
+        if not data:
+            continue
+        pattern_rows = []
+        for index, column in enumerate(columns):
+            stats = counters[index]
+            values = [record.source.values[index] for record in data]
+            stats["types"].update(
+                dict(
+                    pl.Series("kind", [type(v).__name__ for v in values]).value_counts().iter_rows()
+                )
+            )
+            patterns = Counter()
+            examples = {}
+            for record, value in zip(data, values, strict=True):
+                stats["null"] += value is None
+                stats["blank"] += type(value) is str and value == ""
+                digest = hashlib.sha256(
+                    json.dumps(encoded(value), sort_keys=True).encode()
+                ).digest()
+                if len(stats["unique"]) < 1000:
+                    stats["unique"].add(digest)
+                elif digest not in stats["unique"]:
+                    stats["exact"] = False
+                shape = _shape(value)
+                patterns[shape] += 1
+                examples[shape] = min(examples.get(shape, record.record_id), record.record_id)
+            pattern_rows.extend(
+                (table_id, column, pattern, count, examples[pattern])
+                for pattern, count in patterns.items()
+            )
+        db.executemany("INSERT INTO meta.profile_patterns VALUES (?,?,?,?,?)", pattern_rows)
+    grouped = (
+        "SELECT column_id,pattern,sum(n) AS n,min(sample) AS sample "
+        "FROM meta.profile_patterns WHERE table_id=? GROUP BY column_id,pattern"
+    )
+    profiles = []
+    for column, stats in zip(columns, counters, strict=True):
+        formats = db.execute(
+            "SELECT pattern,n FROM (" + grouped + ") WHERE column_id=? "
+            "ORDER BY n DESC,pattern LIMIT 128",
+            [table_id, column],
+        ).fetchall()
+        count = db.execute(
+            "SELECT count(*) FROM (" + grouped + ") WHERE column_id=?", [table_id, column]
+        ).fetchone()[0]
+        profiles.append(
+            ColumnProfile(
+                column_id=column,
+                source_header=headers[column],
+                declared_type=declared_types.get(column),
+                raw_types=dict(stats["types"]),
+                null_count=stats["null"],
+                blank_count=stats["blank"],
+                unique_count_lower_bound=len(stats["unique"]),
+                unique_count_exact=stats["exact"],
+                format_counts=dict(formats),
+                format_counts_truncated=count > 128,
+                distinct_formats=count,
+            )
+        )
+    candidates = {}
+    for direction in ("ASC", "DESC"):
+        for column, pattern, count, record in db.execute(
+            grouped + f" ORDER BY n {direction},column_id,pattern LIMIT 32", [table_id]
+        ).fetchall():
+            key = column, pattern
+            candidates[key] = SampleRef(
+                record_id=record,
+                column_id=column,
+                pattern_id=hashlib.sha256(pattern.encode()).hexdigest(),
+                pattern_count=count,
+            )
+    result = TableProfile(
+        table_id=table_id,
+        row_count=kinds["data"],
+        raw_record_count=sum(kinds.values()),
+        record_kinds=dict(kinds),
+        columns=tuple(profiles),
+        samples=tuple(candidates[k] for k in sorted(candidates)),
+        profile_version="profile-v2-1",
+        candidate_keys=tuple(
+            column.column_id
+            for column in profiles
+            if kinds["data"] > 0
+            and column.unique_count_exact
+            and column.unique_count_lower_bound == kinds["data"]
+            and column.null_count == 0
+            and column.blank_count == 0
+        ),
+    )
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS meta.profiles(table_id VARCHAR PRIMARY KEY, profile JSON)"
+    )
+    db.execute(
+        "INSERT OR REPLACE INTO meta.profiles VALUES (?,?)", [table_id, result.model_dump_json()]
+    )
+    return result
+
+
+def select_evidence(profile: TableProfile, *, seed: int, max_samples: int) -> list[SampleRef]:
+    if type(max_samples) is not int or max_samples < 0:
+        raise ValueError("sample budget must be a nonnegative integer")
+
+    def tie(sample):
+        return hashlib.sha256(f"{seed}:{sample.record_id}:{sample.column_id}".encode()).hexdigest()
+
+    rare = sorted(profile.samples, key=lambda s: (s.pattern_count, tie(s)))
+    common = sorted(profile.samples, key=lambda s: (-s.pattern_count, tie(s)))
+    selected = []
+    seen = set()
+    for pair in zip(rare, common, strict=True):
+        for sample in pair:
+            key = sample.record_id, sample.column_id, sample.pattern_id
+            if len(selected) < max_samples and key not in seen:
+                selected.append(sample)
+                seen.add(key)
+    return selected

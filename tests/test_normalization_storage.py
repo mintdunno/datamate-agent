@@ -134,3 +134,32 @@ def test_evidence_alias_rejects_reversed_line_span():
 
     with pytest.raises(ValueError, match="span"):
         Evidence(source="rulebook.md", sha256="a" * 64, locator="rules", line_start=10, line_end=2)
+
+
+def test_schema_without_physical_header_retains_source_names_and_declared_types(tmp_path):
+    import json
+
+    module = storage()
+    with duckdb.connect() as db:
+        module.create_storage(db)
+        staged = module.stage_table(
+            db,
+            SourceFile(tmp_path / "x.sqlite", "x.sqlite", "a" * 64),
+            SourceTable(
+                "sales",
+                ("Customer Code", " Amount "),
+                None,
+                [SourceRow(1, ("001", 10))],
+                declared_types=("TEXT", "INTEGER"),
+            ),
+        )
+        assert staged.headers == ("Customer Code", " Amount ")
+        assert staged.declared_types == ("TEXT", "INTEGER")
+        metadata = db.execute(
+            "SELECT headers_json,declared_types_json FROM meta.source_tables"
+        ).fetchone()
+        assert json.loads(metadata[0]) == [
+            {"type": "str", "value": "Customer Code"},
+            {"type": "str", "value": " Amount "},
+        ]
+        assert json.loads(metadata[1]) == ["TEXT", "INTEGER"]

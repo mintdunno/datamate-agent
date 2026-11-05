@@ -87,6 +87,8 @@ class StagedTable:
     columns: tuple[str, ...]
     row_count: int
     raw_record_count: int
+    headers: tuple[RawValue, ...] = ()
+    declared_types: tuple[str | None, ...] = ()
 
 
 TypedValue = RawValue | Decimal
@@ -113,3 +115,44 @@ class LineageEdge:
     record_id: str
     column_id: str
     step_id: str
+
+
+class SampleRef(ContractModel):
+    record_id: str
+    column_id: str
+    pattern_id: str
+    pattern_count: int = Field(ge=1)
+
+
+class ColumnProfile(ContractModel):
+    column_id: str
+    source_header: dict[str, object]
+    declared_type: str | None
+    raw_types: dict[str, int]
+    null_count: int = Field(ge=0)
+    blank_count: int = Field(ge=0)
+    unique_count_lower_bound: int = Field(ge=0)
+    unique_count_exact: bool
+    format_counts: dict[str, int]
+    format_counts_truncated: bool
+    distinct_formats: int = Field(ge=0)
+
+
+class TableProfile(ContractModel):
+    table_id: str
+    row_count: int = Field(ge=0)
+    raw_record_count: int = Field(ge=0)
+    record_kinds: dict[str, int]
+    columns: tuple[ColumnProfile, ...]
+    samples: tuple[SampleRef, ...]
+    profile_version: str
+    candidate_keys: tuple[str, ...]
+
+    @property
+    def digest(self) -> str:
+        import hashlib
+        import json
+
+        return hashlib.sha256(
+            json.dumps(self.model_dump(mode="json"), sort_keys=True).encode()
+        ).hexdigest()

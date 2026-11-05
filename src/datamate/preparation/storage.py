@@ -21,7 +21,7 @@ from datamate.preparation.models import (
 )
 from datamate.preparation.normalization import encoded
 
-RAW_STORAGE_VERSION = "raw-v2-1"
+RAW_STORAGE_VERSION = "raw-v2-2"
 
 
 def _json(value: object) -> str:
@@ -57,7 +57,8 @@ def create_storage(db: DuckDBPyConnection) -> None:
     db.execute("""CREATE TABLE meta.source_tables(
         table_id VARCHAR PRIMARY KEY, source VARCHAR NOT NULL, source_sha256 VARCHAR NOT NULL,
         table_name VARCHAR NOT NULL, header_row BIGINT, columns_json JSON NOT NULL,
-        row_count BIGINT NOT NULL, raw_record_count BIGINT NOT NULL)""")
+        row_count BIGINT NOT NULL, raw_record_count BIGINT NOT NULL,
+        headers_json JSON NOT NULL, declared_types_json JSON NOT NULL)""")
     db.execute("""CREATE TABLE staging.raw_rows(
         record_id VARCHAR PRIMARY KEY, table_id VARCHAR NOT NULL, ordinal BIGINT NOT NULL,
         source_row BIGINT NOT NULL, kind VARCHAR NOT NULL,
@@ -126,7 +127,7 @@ def stage_table(db: DuckDBPyConnection, source: SourceFile, table: SourceTable) 
             )
         db.executemany("INSERT INTO staging.raw_rows VALUES (?,?,?,?,?,?,?,?,?)", payloads)
     db.execute(
-        "INSERT INTO meta.source_tables VALUES (?,?,?,?,?,?,?,?)",
+        "INSERT INTO meta.source_tables VALUES (?,?,?,?,?,?,?,?,?,?)",
         [
             table_id,
             source.relative_path,
@@ -136,6 +137,8 @@ def stage_table(db: DuckDBPyConnection, source: SourceFile, table: SourceTable) 
             _json(columns),
             data_count,
             raw_count,
+            _json([encoded(value) for value in table.headers]),
+            _json(table.declared_types),
         ],
     )
     return StagedTable(
@@ -147,6 +150,8 @@ def stage_table(db: DuckDBPyConnection, source: SourceFile, table: SourceTable) 
         columns,
         data_count,
         raw_count,
+        table.headers,
+        table.declared_types,
     )
 
 
