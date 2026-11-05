@@ -56,6 +56,15 @@ the same evidenced policies and their fingerprints apply to every compared model
 See [Stage 2 preparation](docs/engineering/stage2_data_preparation.md) for contracts,
 provenance queries, cache behavior, and limitations.
 
+Adaptive normalization is being implemented on `feat/adaptive-normalization`.
+The Python API `profile_business_sources` creates a source-only raw database and
+profiles in a new workspace, with immutable input copies and supervised CPU
+limits (2 GiB DuckDB, 8 GiB sampled process-tree RSS, 45 minutes, 10 GiB output/spill).
+It accepts frozen `expected_sources` hashes and never loads QA labels or a model.
+Its `RAW_PROFILE_ONLY_UNQUALIFIED` manifest is a diagnostic, not a query-ready
+normalization artifact. Failed workers keep resource diagnostics and no success
+manifest. Existing preparation CLI behavior remains available during integration.
+
 ## Solving and bounded evaluation
 
 Create evaluator-owned fixed suites once; never pass answers or the evaluator manifest

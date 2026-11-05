@@ -7,19 +7,33 @@ import shutil
 import sys
 import tempfile
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from functools import partial
 from importlib.metadata import version
 from itertools import islice
 from pathlib import Path
 
 import duckdb
 
-from datamate.preparation.catalog import rule_entries
+from datamate.preparation.catalog import compile_clauses, rule_entries
 from datamate.preparation.discovery import discover_business, sha256_file
 from datamate.preparation.loaders import load_tables
-from datamate.preparation.models import BusinessInputs, SourceFile, SourceRow, SourceTable
+from datamate.preparation.models import (
+    BusinessInputs,
+    SourceFile,
+    SourceRow,
+    SourceTable,
+    TableProfile,
+)
 from datamate.preparation.normalization import TablePlan, encoded, normalize_rows
-from datamate.preparation.profiling import TableProfiler
+from datamate.preparation.profiling import TableProfiler, profile_table
+from datamate.preparation.resources import (
+    PreparationLimits,
+    PreparationResourceError,
+    PreparationResources,
+    run_bounded_preparation,
+)
+from datamate.preparation.storage import create_storage, stage_table, store_clauses
 
 PIPELINE_VERSION = "stage2-v1"
 
@@ -87,6 +101,95 @@ def _snapshot_inputs(inputs: BusinessInputs, root: Path) -> BusinessInputs:
         tuple(copy(source) for source in inputs.sources),
         tuple(copy(source) for source in inputs.documents),
     )
+
+
+def _source_profile_job(
+    workspace: Path, *, inputs: BusinessInputs, limits: PreparationLimits
+) -> dict:
+    inputs = _snapshot_inputs(inputs, workspace / "inputs")
+    profiles = []
+    with duckdb.connect(
+        str(workspace / "raw.duckdb"),
+        config={
+            "memory_limit": f"{limits.duckdb_memory_bytes}B",
+            "max_temp_directory_size": f"{limits.max_disk_bytes}B",
+            "temp_directory": str(workspace / "spill"),
+            "threads": 2,
+        },
+    ) as db:
+        db.execute("BEGIN")
+        create_storage(db)
+        store_clauses(db, compile_clauses(inputs.documents, split_id=inputs.split_id))
+        calendar = next(
+            source for source in inputs.documents if source.relative_path == "calendar.csv"
+        )
+        for source in (*inputs.sources, calendar):
+            with closing(load_tables(source.path)) as tables:
+                for table in tables:
+                    staged = stage_table(db, source, table)
+                    profiles.append(
+                        profile_table(db, staged.table_id, batch_size=limits.batch_size)
+                    )
+        db.execute("COMMIT")
+    (workspace / "profiles.json").write_text(
+        _json([profile.model_dump(mode="json") for profile in profiles]), encoding="utf-8"
+    )
+    return {"tables": len(profiles), "data_rows": sum(profile.row_count for profile in profiles)}
+
+
+def profile_business_sources(
+    split_root: Path,
+    business_id: str,
+    workspace: Path,
+    *,
+    split_id: str,
+    limits: PreparationLimits | None = None,
+    expected_sources: dict[str, str] | None = None,
+) -> tuple[tuple[TableProfile, ...], PreparationResources]:
+    """Bounded source-only P1 diagnostic; it cannot publish qualified clean facts."""
+    inputs = discover_business(split_root, business_id, split_id=split_id)
+    sources = {
+        source.relative_path: source.sha256 for source in (*inputs.sources, *inputs.documents)
+    }
+    if expected_sources is not None and sources != expected_sources:
+        raise ValueError("sources differ from frozen source selection")
+    if workspace.resolve().is_relative_to(inputs.split_root):
+        raise ValueError("profile workspace must be outside the source split")
+    workspace.mkdir(parents=True, exist_ok=False)
+    limits = limits or PreparationLimits()
+    try:
+        result, report = run_bounded_preparation(
+            partial(_source_profile_job, inputs=inputs, limits=limits), workspace, limits=limits
+        )
+    except PreparationResourceError as exc:
+        (workspace / "resources.json").write_text(
+            _json({"status": "FAILED", "reason": exc.reason, **asdict(exc.resources)}),
+            encoding="utf-8",
+        )
+        raise
+    (workspace / "resources.json").write_text(_json(asdict(report)), encoding="utf-8")
+    current = discover_business(split_root, business_id, split_id=split_id)
+    if sources != {s.relative_path: s.sha256 for s in (*current.sources, *current.documents)}:
+        raise ValueError("sources changed during profiling; diagnostic is not publishable")
+    profiles = tuple(
+        TableProfile.model_validate_json(_json(value))
+        for value in json.loads((workspace / "profiles.json").read_text(encoding="utf-8"))
+    )
+    (workspace / "profile-manifest.json").write_text(
+        _json(
+            {
+                "status": "RAW_PROFILE_ONLY_UNQUALIFIED",
+                "split_id": split_id,
+                "business_id": business_id,
+                "sources": sources,
+                "profile_digests": [p.digest for p in profiles],
+                "limits": limits.model_dump(mode="json"),
+                **result,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return profiles, report
 
 
 def _store_row(db, table_id: str, row: SourceRow, *, kind: str, prepared=None) -> tuple:
