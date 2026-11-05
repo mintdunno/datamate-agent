@@ -1,7 +1,7 @@
 # New Milestone 1 — Evidence-Guided Adaptive Normalization
 
-Status: APPROVED design ("ok duyệt"), revised for the user-approved simplification
-("ok chốt ... sửa lại plan"), 2026-11-04. Revision 2.
+Status: APPROVED design (2026-11-04), revised for the approved simplification
+(revision 2, 2026-11-04) and the user's Polars-only decision (revision 3, 2026-11-05).
 This is the design and acceptance roadmap; its file-by-file implementation plan is
 a separate artifact. This revision changes documentation only.
 
@@ -14,7 +14,7 @@ before further QA optimization. Preserve working components and the shared codeb
 
 Requirements: CSV/XLSX/SQLite; immutable raw identity/provenance; full deterministic
 CPU profiling with bounded model inputs; active rulebook/README compilation;
-Pandas-first flexible operations; bounded SLM fallback; independent validation;
+Polars and pure-Python typed batch operations; bounded SLM fallback; independent validation;
 scoped quarantine; versioned query-time measures; common inference profiles and
 offline-capable execution; atomic Conventional Commits. No embedding, reranker,
 vector database or multi-agent solving runtime. Development reviewers are separate.
@@ -23,6 +23,9 @@ Accepted planning decisions: reference quotas/checkpoint assignment, campaign bu
 and incremental module boundaries. Revision 2 makes typed operator proposals mandatory
 (Level 1), with generated Python conditional (Level 2). Changes after freezing need a
 new version and comparability statement; simplification does not relax data-quality gates.
+Revision 3 retains Polars and pure Python, with DuckDB for storage/query/spilled state.
+The user explicitly rejected introducing Pandas. This replaces the earlier library
+preference without changing normalization capabilities, evidence or acceptance gates.
 
 Non-goals: rewrite QA; tune from QA answers; label every real record; create a full
 teacher-generated golden DB; guarantee arbitrary future semantics without extensions;
@@ -44,6 +47,9 @@ first-ten-business audit and Terra public-subset audit. The externally asserted
 
 P0 must resolve these normative conflicts before production changes:
 
+- Retain Polars/pure Python; the earlier Pandas-first implementation preference is
+  superseded by the user's 2026-11-05 decision. Align dependent documentation, with
+  no Pandas dependency, batch interface or generated-code import for normalization.
 - Question months/quarters without years use as_of_date and the active book;
   incomplete SOURCE dates may use their sheet year. No fixed2026/TET window.
 - Dedup requires evidenced same-order scope and relevant cell equality. Non-order
@@ -176,10 +182,15 @@ digits. Unsupported precision remains raw with blocked affected values. Keep raw
 quantity/unit, base quantity and conversion proof. Date-only is not midnight time.
 Respect Excel epoch/fractional serials and keep unknown timezone explicitly unknown.
 
-Pandas is a bounded-batch operation interface, not replacement I/O. Retain proven
-CSV/openpyxl/sqlite3 and Polars profiling. Proposed new direct dependencies: Pandas,
-rank_bm25, psutil (batch transforms, lexical index, resource telemetry). Validate and
-lock/audit compatible versions during implementation, not this design stage.
+Retain CSV/openpyxl/sqlite3 loaders, existing Polars profiling and pure-Python parsers.
+The operation boundary consumes bounded sequences of immutable RawRecord values and
+returns typed facts/dispositions/lineage/events. Use Polars internally for supported
+typed column operations and pure Python for lossless mixed-value parsing/stateful
+logic. Do not coerce heterogeneous raw cells into a common DataFrame dtype; original
+values/types remain authoritative. Introduce neither Pandas nor a second dataframe
+engine/adapter framework. Proposed new direct dependencies are rank_bm25 and psutil
+(lexical index/resource telemetry); validate and lock/audit compatible versions during
+implementation. The SLM receives typed plans/evidence, not a dataframe-library API.
 
 Default batch1000. Test Decimal/null/ID/leading-zero/date/time/bytes roundtrips with
 no implicit float/NaN coercion. Carry group state across chunks; reset at evidenced
@@ -343,8 +354,10 @@ no pickle, emitted shell or arbitrary SQL executes in the parent.
 Typed micro-transform interface handles cell/group/table batches with source IDs.
 No installs, downloads, network/filesystem effects or nested model calls. AST checks
 are defense in depth, not isolation. Proposed defaults:1CPU,512MiB RAM/swap ceiling,
-32PIDs,10s deadline,64MiB tmpfs; explicitly configured Pandas group/table work may use
+32PIDs,10s deadline,64MiB tmpfs; explicitly configured Polars group/table work may use
 1GiB only after qualification. Never silently relax confinement.
+If activated, generated transforms use only the approved standard library/Polars
+environment; Pandas imports and dynamic dependency installation are disallowed.
 
 Actually test file/network denial, resource enforcement and process-tree termination;
 flags alone do not prove security. Current Windows host has no qualified daemon.
@@ -452,7 +465,7 @@ this revision; its source authority and gates must remain synchronized here.
 | P0 | Resolve spec conflicts, freeze pilot/case selectors, define evidence/disposition/lineage/qualification and reference contracts | No known source-authority contradiction; no label access; explicit missing SQL/A10 deliverables | docs: align specification; feat: normalization contracts and pilot selection |
 | P1 | Separate raw staging and full CPU profiles; layout/merged metadata and bounded representative evidence | No raw loss; stable identity/source hashes; chunk/layout/format fidelity; zero model calls | refactor: stage/profile separation; feat: source metadata/profiles |
 | P2 | Versioned clauses, roles/grain/keys/status/units/capabilities and bounded BM25/fuzzy retrieval | Every clause mapped/unresolved; ambiguity/collision rejection; explicit precedence/dependencies and cache identity | feat: semantic registry; feat: binding validation |
-| P3 | Existing/new deterministic ops, Pandas boundary, grain-aware canonical facts and1:N lineage | Synthetic positive/negative gates; dtype losslessness; repeated order amounts not multiplied; full source accounting | feat: operations/batch contracts; feat: projections/lineage |
+| P3 | Existing/new deterministic ops, typed record batches with Polars/pure Python, grain-aware canonical facts and1:N lineage | Synthetic positive/negative gates; dtype losslessness; repeated order amounts not multiplied; full source accounting | feat: operations/batch contracts; feat: projections/lineage |
 | P4 | Independent audits, dependency quarantine, versioned atomic publication and source-only development diagnostic | No false READY, hidden partial totals or unsupported N/A; absent source differs from processing uncertainty; rollback/invalidation and label-free diagnostic tests | feat: intrinsic audit; refactor: qualified publication/cache |
 | P5 | Mandatory Level 1 typed plans, campaign guard and bounded recovery; conditional Level 2 | Live accept/reject evidence on>=3 registered operation families; resource/offline/budget tests; actual isolation qualification if Level 2 is enabled/required | feat: adaptive plans; conditional feat: isolated transform backend |
 | P6 | Blinded references, baseline/final qualification, one checkpoint and minimal QA artifact adapter | Reference minima and fixed regression cases pass; full five-business audit; no label leakage; budgets and environment statuses honest | test: normalization evaluation; feat: artifact adapter; docs: evidence |
@@ -565,3 +578,9 @@ boundary-focused types, a development diagnostic and conditional Level 2. P0 wil
 reconcile normative source-document changes explicitly; these input sources remain
 untouched during planning. Main performs the revision's own plan/spec self-review;
 earlier reviewer results above apply to the original design, not a new review claim.
+
+Revision 3 (2026-11-05): the user confirmed "ok vay giu polars khong dung pandas nua".
+Retain Polars; use typed record batches and pure-Python parsers rather than adding
+Pandas. Update Task 8 and dependent batch/sandbox wording only; all pilot, reference,
+budget, capability, audit and conditional-Level-2 gates remain binding. No code or
+dependency change, library-performance benchmark or qualification occurred here.

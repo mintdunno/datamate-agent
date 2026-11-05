@@ -6,11 +6,11 @@
 
 **Architecture:** Reuse existing I/O, immutable source snapshots, raw tagging, operations, atomic publication and common inference accounting. Keep one preparation flow with concrete functions, typed operator proposals and independent qualification; expose only qualified factual scopes. Evaluator-owned references and direct runners reuse one SQLite ledger and immutable manifests; generated Python is conditional.
 
-**Tech Stack:** Python 3.13, uv, Pydantic, DuckDB, openpyxl, current CSV/SQLite readers and Polars profiling; bounded Pandas batches, rank_bm25, RapidFuzz and psutil as justified locked additions; PydanticAI/common OpenAI-compatible inference; pytest/Ruff. Linux OCI is required only for activated Level 2 generated Python.
+**Tech Stack:** Python 3.13, uv, Pydantic, DuckDB, openpyxl, current CSV/SQLite readers, Polars and pure-Python bounded batch operations; rank_bm25 and psutil as justified locked additions, existing RapidFuzz; PydanticAI/common OpenAI-compatible inference; pytest/Ruff. Linux OCI is required only for activated Level 2 generated Python.
 
-**Spec:** docs/superpowers/specs/2026-11-04-adaptive-normalization-design.md, revision 2, updated for the user's approved simplification on 2026-11-04. Read both documents. Source authority remains the active split's rulebook/README/calendar and official competition rules; uncorrected v3 examples do not override them.
+**Spec:** docs/superpowers/specs/2026-11-04-adaptive-normalization-design.md, revision 3, updated for the user's Polars-only decision on 2026-11-05, retaining revision 2's approved simplification. Read both documents. Source authority remains the active split's rulebook/README/calendar and official competition rules; uncorrected v3 examples do not override them.
 
-**Status:** Revision 2 implements the approved simplification direction; product
+**Status:** Revision 3 retains Polars and removes planned Pandas usage; product
 implementation has not started. The 24-task structure and existing execution method
 are retained. The revision record below distinguishes spec changes from implementation choices.
 
@@ -23,10 +23,11 @@ are retained. The revision record below distinguishes spec changes from implemen
 - Initial reference target:20 cases/business=100;>=10 VERIFIED DETERMINATE/business. Synthetic minimum 88: positive and counterexample for each of 44 corrected cases, with N/M/Q ownership.
 - References have separate evidence_status and expected_behavior axes. Model agreement/confidence is not verification; an all-abstain system cannot pass determinate-case gates.
 - Level 1 is mandatory: reviewed registered operations with typed parameters, evidence and scopes. No arbitrary Python/SQL or executable-expression escape hatch through plan parameters.
+- Retain Polars/pure Python with DuckDB; introduce no Pandas dependency or usage, no dataframe-engine selector and no duplicate operator implementations. The operation boundary is typed record batches; the SLM interface remains typed plans/evidence.
 - Batch1000; default one business at a time. Proposed safety ceilings from the approved design: DuckDB2GiB, process-tree RSS8GiB,45min/business, generated-output/spill10GiB. Record actual enforcement and measurements.
 - NIM campaign 120 TOTAL actual HTTP attempts, smoke20/development60/final40, shared25RPM/1200UTC-day and300/run outer guard; no automatic increases or new-ledger bypass.
 - Per issue<=2 proposal rounds,<=2 logical requests/round,<=1 transport retry/request,<=8HTTP attempts/issue, concurrency1. Context32768, request-input24000bytes, output2048tokens; preserve omission/token-completeness reporting.
-- Level 2 generated Python is DISABLED by default and conditional on documented development capability gaps. Its states are DISABLED/UNQUALIFIED/QUALIFIED. If enabled or required to meet a mandatory gate, qualified Linux OCI is mandatory:1CPU,512MiB memory/swap ceiling,32PIDs,10s,64MiB tmpfs; a qualified Pandas group/table mode may use1GiB. Native Windows arbitrary exec is disabled. An unmet mandatory capability remains PARTIAL even with Level 2 disabled.
+- Level 2 generated Python is DISABLED by default and conditional on documented development capability gaps. Its states are DISABLED/UNQUALIFIED/QUALIFIED. If enabled or required to meet a mandatory gate, qualified Linux OCI is mandatory:1CPU,512MiB memory/swap ceiling,32PIDs,10s,64MiB tmpfs; a qualified Polars group/table mode may use1GiB. Native Windows arbitrary exec is disabled. An unmet mandatory capability remains PARTIAL even with Level 2 disabled.
 - Use concrete verifier functions, direct runners and the existing SQLite ledger. No generic proof plugins, campaign scheduler, event bus, second accounting ledger or unnecessary DTO/serialization layers.
 - No implicit model/backend/thinking/quantization fallback, large model downloads, paid jobs, merge/push/history rewrite or cleanup of old state.
 - Every logical code unit: red test -> minimal implementation -> focused regressions -> Ruff -> relevant full/integration checks -> staged diff/secret review -> atomic Conventional Commit. A test file's existence alone is not coverage.
@@ -50,7 +51,7 @@ Keep current package directories. Proposed new files have separate responsibilit
 | src/datamate/preparation/profiling.py | Full CPU statistics and bounded evidence, independent of candidate transformations |
 | src/datamate/preparation/catalog.py | Source clauses, retrieval, declarations, binding validation and supported measure policies |
 | src/datamate/preparation/normalization.py | Existing parsers/TablePlan compatibility and lossless parser extensions |
-| src/datamate/preparation/operations.py | Typed registered Pandas-batch operations, group state and bounded/spilled dedup |
+| src/datamate/preparation/operations.py | Typed record-batch operations using Polars/pure Python, group state and bounded/spilled dedup |
 | src/datamate/preparation/projection.py | Canonical factual projections and trusted flat SQL views |
 | src/datamate/preparation/audit.py | Independent applicability-aware checks and dependency qualification |
 | src/datamate/preparation/adaptive.py | Proposal-only model integration, typed recovery and transactional acceptance |
@@ -208,7 +209,7 @@ assert case_ids == set(range(1, 45))
 ```
 
 - [ ] Run uv run --locked pytest tests/test_normalization_references.py -q; expect missing API/config failures, not unexpected network/data access.
-- [ ] Implement types/policy freeze, quoted-source corrections and a versioned 44-case task mapping. Keep external237/237/count claims explicitly unverified; do not encode public targets/alias lists as expected outputs.
+- [ ] Implement types/policy freeze, quoted-source corrections and a versioned 44-case task mapping. Align the source document's earlier library preference with the user's Polars-only decision. Keep external237/237/count claims explicitly unverified; do not encode public targets/alias lists as expected outputs.
 - [ ] Re-run the task tests; policy freezes before profiles, source drift changes digest and immutable-policy overwrite fails. Update docs hashes in the new execution report when corrections are committed.
 - [ ] Commit: docs(normalization): reconcile source rules and freeze pilot contracts.
 
@@ -339,23 +340,28 @@ assert similarity_alone_accepted_binding_count == 0
 - [ ] Run focused tests, full pytest/Ruff and dependency audit after installation. A dependency/compatibility failure is surfaced, not silently replaced by another ranking engine.
 - [ ] Commit: feat(preparation): add versioned bounded lexical rule retrieval.
 
-### Task 8: Typed Pandas batch boundary and operation registry (P3)
+### Task 8: Typed record batches and Polars/Python operation registry (P3)
 
-**Files:** Create src/datamate/preparation/operations.py, tests/test_cleaning_operations.py; modify src/datamate/preparation/normalization.py, pyproject.toml, uv.lock.
-**Interfaces:** OperationState(db:DuckDBPyConnection,boundary_id:str) with reset_boundary(boundary_id:str)->None and close()->None; execute_batch(batch:pd.DataFrame,step:CleaningStep,state:OperationState)->BatchResult; validate_plan(plan:CleaningPlan,bindings:SemanticBindings)->None. BatchResult is defined in src/datamate/preparation/operations.py with facts:tuple[CandidateFact,...], dispositions:tuple[RawDisposition,...], lineage:tuple[LineageEdge,...], events:tuple[TransformEvent,...]. State owns/resets spill tables, not the caller's DB connection; close cleans its temporary state on success/failure. Frame record_id is immutable.
+**Files:** Create src/datamate/preparation/operations.py, tests/test_cleaning_operations.py; modify src/datamate/preparation/normalization.py. Reuse the existing Polars dependency; this task adds no dependency or lockfile change.
+**Interfaces:** OperationState(db:DuckDBPyConnection,boundary_id:str) with reset_boundary(boundary_id:str)->None and close()->None; execute_batch(batch:Sequence[RawRecord],step:CleaningStep,state:OperationState)->BatchResult; validate_plan(plan:CleaningPlan,bindings:SemanticBindings)->None. This directly accepts iter_raw_batches output from Task 2. BatchResult in src/datamate/preparation/operations.py contains facts:tuple[CandidateFact,...], dispositions:tuple[RawDisposition,...], lineage:tuple[LineageEdge,...], events:tuple[TransformEvent,...]. Operators use existing Polars for supported typed columns and pure Python for raw mixed values/parsers, with one reviewed operation/version lookup. State owns/resets spill tables, not the caller's connection; close cleans its temporary state on success/failure. Raw records/IDs remain immutable, and no DataFrame is passed through the SLM contract.
 
 - [ ] Write test_batch_roundtrip_preserves_decimal_none_leading_zero_ids_dates_and_bytes and test_unregistered_operation_or_callable_parameters_fail_closed. Assert Decimal('0.10'),None,'001',date/time/bytes survive with no NaN/float conversion; raw columns/IDs are unchanged.
+- [ ] Add test_polars_operations_preserve_mixed_raw_values_and_exact_decimal_scale: keep heterogeneous native/text raw values tagged and unchanged, build only explicitly typed lossless working columns, and use pure-Python typed parsing for values outside that column contract. Unsupported precision remains raw/blocked under the existing policy; do not silently cast it to float/string or collapse None and blank.
 
 ```python
 assert roundtrip_values == [Decimal("0.10"), None, "001", date(2025, 1, 2), b"\x00"]
 assert all(type(a) is type(b) for a, b in zip(roundtrip_values, source_values, strict=True))
+assert roundtrip_values[0].as_tuple().exponent == -2
 assert record_ids_after == record_ids_before
 assert unregistered_operation_executed is False
+assert mixed_raw_values_after == mixed_raw_values_before
+assert accepted_lossy_cast_count == 0
+assert none_and_blank_remain_distinct is True
 ```
 
 - [ ] Run uv run --locked pytest tests/test_cleaning_operations.py -q; expect missing registry/batch API.
-- [ ] Add Pandas through uv and implement explicit object/nullable batch adapters, typed parameter models and reviewed operation/version lookup. Wrap existing pure parsers rather than rewriting tested I/O; do not deserialize callables or executable strings as registered steps.
-- [ ] Run task tests, existing normalization/loaders tests and full suite after dependency change. Record compatible locked versions and confirm no premature Polars removal.
+- [ ] Implement typed record-batch dispatch and parameter models using the existing Polars/Python stack. Reuse pure parsers and source records, with explicit schemas for any Polars working columns; no implicit supertype coercion of raw cells, Pandas conversion or pl.Object wrapper for the entire raw payload. Do not deserialize callables/executable strings as registered steps or introduce a generic engine adapter.
+- [ ] Run task tests, existing normalization/loaders tests and the full suite for the shared batch-contract change. Keep Polars and its locked version; record actual behavior/resource evidence without claiming a speedup from library choice alone.
 - [ ] Commit: feat(preparation): introduce lossless typed batch operation registry.
 
 ### Task 9: Mixed-pattern numeric, datetime, quantity and ID parsers (P3)
@@ -665,10 +671,12 @@ assert qualification_after_limit_or_image_change != "QUALIFIED"
 assert qualification_when_oci_tests_skipped != "QUALIFIED"
 assert forbidden_host_mounts == set()
 assert microcode_in_cleaning_plan_parameters_accepted is False
+assert forbidden_dataframe_import_accepted is False
 ```
 
 - [ ] If activated, run uv run --locked pytest tests/test_normalization_sandbox.py -m 'not oci' -q; expect missing backend APIs.
 - [ ] If activated, implement the pinned Linux OCI runner: network disabled, read-only root, nonroot/no-new-privileges/cap-drop/seccomp, no privileged/host data/reference/secrets/socket access and approved CPU/RAM/swap/PID/time/tmpfs/output caps. Pass bounded serialized data; no pickle, shell or emitted SQL in host. AST checks supplement actual isolation.
+- [ ] If activated, keep the approved generated-transform environment to allowed standard-library modules and Polars; reject Pandas imports and dynamic installs before execution, while retaining actual OCI confinement. Include the forbidden-library case in tests/test_normalization_sandbox.py; library screening alone does not qualify isolation.
 - [ ] If activated, connect an explicitly selected typed MicroTransformInput proposal route to the same bounded inference/recovery/accounting path. Validate hashes, source IDs, schema and input/output sizes, require current qualification, then independently audit transactional results/lineage before acceptance. Generated code is never hidden inside Level 1 CleaningPlan parameters and never runs in the host. This route uses the same profile, per-issue request bounds and campaign caps; no silent fallback.
 - [ ] If activated, add real marked oci tests for file/network denial, memory/process/time limits, tmp/output overflow and process-tree termination. Use a provided pinned image; record missing daemon/image/enforcement as UNQUALIFIED/PARTIAL. Do not auto-pull large images/start paid jobs or relax confinement.
 - [ ] If activated, run uv run --locked pytest tests/test_normalization_sandbox.py -m 'not oci' -q; expect PASS. Run uv run --locked pytest tests/test_normalization_sandbox.py -m oci -q only in the supplied supported environment; skipped/unrun tests do not qualify it. Save actual qualification evidence under state/runs/normalization/security.
@@ -740,10 +748,10 @@ assert checkpoint_labels_in_candidate_context == 0
 
 ## Self-review and execution handoff
 
-- [x] Main checked revision-2 spec coverage: all pilot/reference/catalog/budget and source/audit/qualification gates retained; Level 1 mandatory, Level 2 conditional with complete isolation when activated.
-- [x] Main checked type ownership/signatures: separate proposal/proof/reference and raw/fact/disposition invariants, internal receipt/freeze values, evidence DTO removal and evaluator isolation. Diagnostic reads authoritative build metadata rather than incomplete intermediate DTOs.
-- [x] Main checked Review Focus and assigned boundary/crash/diagnostic/capability tests: disabled Level 2 cannot mask a missing required capability; mock/skipped OCI cannot qualify it. Mandatory security guards precede smoke; actual backend tests remain conditional.
-- [x] Main checked all 24 task IDs, red/green commands, proportion and dependency order: Task4 freezes IDs before transformations, reference expectations precede baseline, Task17 telemetry precedes diagnostic, Task18 accounting precedes model calls, and conditional backend precedes final freeze. No implementation, model/full-data runs or substitute self-review dispatch occurred.
+- [x] Main checked revision-3 source/plan consistency: retain Polars/pure Python, remove the planned Pandas dependency/interface, and preserve all Level 1/Level 2 and pilot/reference/budget gates.
+- [x] Main checked batch signatures: Task 2's list[RawRecord] satisfies Task 8's Sequence[RawRecord]; later stateful/projection/adaptive tasks consume the same BatchResult. Raw/fact/disposition invariants and evaluator isolation remain separate.
+- [x] Main checked Review Focus plus mixed-value/precision and conditional forbidden-library tests. Decimal scale is asserted independently of numeric equality; working Polars columns cannot overwrite heterogeneous raw values. All red/green commands remain actionable.
+- [x] Main checked all 24 task IDs, unchanged dependency order and proportion. Task 8 retains Polars, adds no dependency and introduces no second dataframe engine/selector. Product code, datasets and model/data execution were outside this planning change.
 
 ## Revision 2 record
 
@@ -756,6 +764,17 @@ requirements when activated. This does not claim equal open-ended flexibility or
 any required normalization capability. Keep all 24 task IDs, the four-dev/one-checkpoint
 pilot, 100 cases, >=10 verified determinate/business, 44 catalog/88 synthetic minimum, 120 HTTP
 attempts split 20/60/40 and two improvement rounds. No core answering-agent rewrite.
+
+## Revision 3 record
+
+On 2026-11-05 the user confirmed "ok vay giu polars khong dung pandas nua". Keep
+Polars and pure Python, with DuckDB for persistent/query/spilled state. Task 8 now
+consumes Sequence[RawRecord] rather than pd.DataFrame and adds no dependency; reviewed
+operators choose their explicit Polars/Python implementation without an engine-selector
+framework. Remove planned Pandas usage/dependency from the active stack, including
+conditional Level 2. Preserve all revision-2 simplifications and acceptance gates.
+This records the library decision, not a measured performance improvement. Product
+code/dependencies, datasets and the user's original source documents remain untouched.
 
 Preserved execution preference: main owns architecture/security/integration/Git;
 selective configured development subagents handle independent bounded work, using
