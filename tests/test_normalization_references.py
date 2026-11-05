@@ -202,11 +202,19 @@ def test_checker_rejects_guesses_and_proof_reuse_after_revision():
     proof = module.check_reference_proof(proposal, lambda ref: {"type": "str", "value": "001"})
     adjudicated = module.adjudicate_reference(proposal, proof)
     assert adjudicated.evidence_status == "VERIFIED"
+    assert not adjudicated.determinate  # Raw fidelity alone cannot qualify normalization.
     changed = proposal.model_copy(update={"expected_value": {"type": "str", "value": "1"}})
     with pytest.raises(ValueError, match="digest"):
         module.adjudicate_reference(changed, proof)
     wrong = module.check_reference_proof(changed, lambda ref: {"type": "str", "value": "001"})
     assert module.adjudicate_reference(changed, wrong).evidence_status == "UNRESOLVED"
+
+
+def test_exact_raw_observation_cannot_self_promote_to_normalized_cell_truth():
+    module = api()
+    proposal = reference_proposal(assertion_stage="parsed_cell")
+    proof = module.check_reference_proof(proposal, lambda ref: {"type": "str", "value": "001"})
+    assert not proof.verified
 
 
 @pytest.mark.parametrize("kind", ["unknown_plugin", "arithmetic_total", "trusted_keys"])

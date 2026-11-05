@@ -18,7 +18,10 @@ from datamate.preparation.models import EvidenceRef, TableProfile
 
 SELECTOR_VERSION = "stratified-source-v1"
 STRATUM_TARGETS = {"rare": 4, "common": 4, "identity": 4, "temporal": 4, "structure": 4}
-PROOF_VERSION = "source-proof-v1"
+PROOF_VERSION = "source-proof-v2"
+AssertionStage = Literal[
+    "raw", "parsed_cell", "canonical_fact", "disposition", "relationship", "capability"
+]
 ExpectedBehavior = Literal["TRANSFORM", "PRESERVE", "SOURCE_ABSENCE", "PROCESSING_AMBIGUITY"]
 _CHECKER_SEAL = object()
 
@@ -164,6 +167,7 @@ class ReferenceProposal(ContractModel):
     """Untrusted reviewer boundary; no verification/confidence fields are accepted."""
 
     case_id: Sha256
+    assertion_stage: AssertionStage = "raw"
     revision: int = Field(ge=1)
     revision_reason: NonblankString | None = None
     expected_behavior: ExpectedBehavior
@@ -195,6 +199,7 @@ class ProofCheckResult:
 
 class AdjudicatedReference(ContractModel):
     case_id: Sha256
+    assertion_stage: AssertionStage = "raw"
     revision: int = Field(ge=1)
     revision_reason: str | None = None
     expected_behavior: ExpectedBehavior | None
@@ -207,10 +212,15 @@ class AdjudicatedReference(ContractModel):
 
     @property
     def determinate(self) -> bool:
-        return self.evidence_status == "VERIFIED" and self.expected_behavior in {
-            "TRANSFORM",
-            "PRESERVE",
-        }
+        return (
+            self.assertion_stage != "raw"
+            and self.evidence_status == "VERIFIED"
+            and self.expected_behavior
+            in {
+                "TRANSFORM",
+                "PRESERVE",
+            }
+        )
 
 
 class ReferenceSuite(ContractModel):
@@ -240,7 +250,11 @@ def check_reference_proof(
     proposal = ReferenceProposal.model_validate_json(proposal.model_dump_json())
     verified = False
     reason = "proof kind has no independently qualified checker"
-    if proposal.proof_kind == "exact_observation" and proposal.expected_behavior == "PRESERVE":
+    if (
+        proposal.proof_kind == "exact_observation"
+        and proposal.expected_behavior == "PRESERVE"
+        and proposal.assertion_stage == "raw"
+    ):
         try:
             observed = evidence_reader(proposal.evidence[0])
             verified = _digest(observed) == _digest(proposal.expected_value)
@@ -283,6 +297,7 @@ def adjudicate_reference(
         raise ValueError("proof digest does not match reference proposal")
     return AdjudicatedReference(
         case_id=proposal.case_id,
+        assertion_stage=proposal.assertion_stage,
         revision=proposal.revision,
         revision_reason=proposal.revision_reason,
         expected_behavior=proposal.expected_behavior,
