@@ -4,18 +4,23 @@ import hashlib
 import json
 import os
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import Field, TypeAdapter, model_validator
+from duckdb import DuckDBPyConnection
+from pydantic import Field, JsonValue, TypeAdapter, model_validator
 
 from datamate.contracts.base import ContractModel, NonblankString, Sha256
 from datamate.preparation.discovery import discover_business
-from datamate.preparation.models import TableProfile
+from datamate.preparation.models import EvidenceRef, TableProfile
 
 SELECTOR_VERSION = "stratified-source-v1"
 STRATUM_TARGETS = {"rare": 4, "common": 4, "identity": 4, "temporal": 4, "structure": 4}
+PROOF_VERSION = "source-proof-v1"
+ExpectedBehavior = Literal["TRANSFORM", "PRESERVE", "SOURCE_ABSENCE", "PROCESSING_AMBIGUITY"]
+_CHECKER_SEAL = object()
 
 
 def _digest(value: object) -> str:
@@ -147,6 +152,182 @@ class CaseManifest(ContractModel):
     @property
     def digest(self) -> str:
         return _digest(self.model_dump(mode="json"))
+
+    @model_validator(mode="after")
+    def unique_cases(self) -> Self:
+        if len({case.case_id for case in self.cases}) != 100:
+            raise ValueError("manifest requires 100 distinct cases")
+        return self
+
+
+class ReferenceProposal(ContractModel):
+    """Untrusted reviewer boundary; no verification/confidence fields are accepted."""
+
+    case_id: Sha256
+    revision: int = Field(ge=1)
+    revision_reason: NonblankString | None = None
+    expected_behavior: ExpectedBehavior
+    expected_value: JsonValue
+    proof_kind: NonblankString
+    evidence: tuple[EvidenceRef, ...] = Field(min_length=1, max_length=50)
+
+    @model_validator(mode="after")
+    def explain_revisions(self) -> Self:
+        if self.revision > 1 and self.revision_reason is None:
+            raise ValueError("reference revision requires an evidence-based reason")
+        return self
+
+    @property
+    def digest(self) -> str:
+        return _digest(self.model_dump(mode="json"))
+
+
+@dataclass(frozen=True)
+class ProofCheckResult:
+    """Internal checker output, never an LLM response schema."""
+
+    proposal_digest: str
+    verified: bool
+    reason: str
+    version: str = PROOF_VERSION
+    _seal: object = field(default=None, repr=False, compare=False)
+
+
+class AdjudicatedReference(ContractModel):
+    case_id: Sha256
+    revision: int = Field(ge=1)
+    revision_reason: str | None = None
+    expected_behavior: ExpectedBehavior | None
+    expected_value: JsonValue
+    evidence_status: Literal["VERIFIED", "PROVISIONAL", "UNRESOLVED"]
+    proposal_digest: Sha256 | None
+    checker_version: NonblankString
+    reason: NonblankString
+    evidence: tuple[EvidenceRef, ...] = ()
+
+    @property
+    def determinate(self) -> bool:
+        return self.evidence_status == "VERIFIED" and self.expected_behavior in {
+            "TRANSFORM",
+            "PRESERVE",
+        }
+
+
+class ReferenceSuite(ContractModel):
+    manifest_digest: Sha256
+    references: tuple[AdjudicatedReference, ...] = Field(min_length=100, max_length=100)
+
+    @model_validator(mode="after")
+    def distinct_cases(self) -> Self:
+        if len({reference.case_id for reference in self.references}) != 100:
+            raise ValueError("reference suite requires 100 distinct cases")
+        return self
+
+    @property
+    def digest(self) -> str:
+        return _digest(self.model_dump(mode="json"))
+
+
+def check_reference_proof(
+    proposal: ReferenceProposal, evidence_reader: Callable[[EvidenceRef], object]
+) -> ProofCheckResult:
+    """The reader is evaluator-owned and must verify source hashes and coordinates.
+
+    This first checker proves exact preservation only. Semantic proof strategies
+    are added with independent real evidence; unsupported strategies fail closed.
+    In particular, agreeing arithmetic under two scales is not a distinguishing proof.
+    """
+    proposal = ReferenceProposal.model_validate_json(proposal.model_dump_json())
+    verified = False
+    reason = "proof kind has no independently qualified checker"
+    if proposal.proof_kind == "exact_observation" and proposal.expected_behavior == "PRESERVE":
+        try:
+            observed = evidence_reader(proposal.evidence[0])
+            verified = _digest(observed) == _digest(proposal.expected_value)
+            reason = "exact source observation" if verified else "source observation differs"
+        except (ValueError, OSError) as exc:
+            reason = f"source evidence unavailable: {type(exc).__name__}"
+    return ProofCheckResult(proposal.digest, verified, reason, _seal=_CHECKER_SEAL)
+
+
+def read_source_observation(
+    db: DuckDBPyConnection, sources: SourceSnapshot, evidence: EvidenceRef
+) -> object:
+    """Read only frozen raw staging, never clean/candidate values or parser output."""
+    if not any(files.get(evidence.source) == evidence.sha256 for files in sources.files.values()):
+        raise ValueError("evidence is outside frozen source snapshot")
+    if not evidence.locator.startswith("raw:") or evidence.locator.count("/") != 1:
+        raise ValueError("unsupported observation locator")
+    record_id, column_id = evidence.locator[4:].split("/")
+    row = db.execute(
+        "SELECT r.values_json,t.columns_json FROM staging.raw_rows r "
+        "JOIN meta.source_tables t ON t.table_id=r.table_id "
+        "WHERE r.record_id=? AND t.source=? AND t.source_sha256=?",
+        [record_id, evidence.source, evidence.sha256],
+    ).fetchone()
+    if row is None:
+        raise ValueError("raw evidence coordinates do not match source")
+    values, columns = json.loads(row[0]), json.loads(row[1])
+    if column_id not in columns or columns.index(column_id) >= len(values):
+        raise ValueError("source observation column is unavailable")
+    return values[columns.index(column_id)]
+
+
+def adjudicate_reference(
+    proposal: ReferenceProposal, proof: ProofCheckResult
+) -> AdjudicatedReference:
+    proposal = ReferenceProposal.model_validate_json(proposal.model_dump_json())
+    if proof._seal is not _CHECKER_SEAL:
+        raise ValueError("verification must originate from the evaluator checker")
+    if proof.proposal_digest != proposal.digest:
+        raise ValueError("proof digest does not match reference proposal")
+    return AdjudicatedReference(
+        case_id=proposal.case_id,
+        revision=proposal.revision,
+        revision_reason=proposal.revision_reason,
+        expected_behavior=proposal.expected_behavior,
+        expected_value=proposal.expected_value,
+        evidence_status="VERIFIED" if proof.verified else "UNRESOLVED",
+        proposal_digest=proposal.digest,
+        checker_version=proof.version,
+        reason=proof.reason,
+        evidence=proposal.evidence,
+    )
+
+
+def freeze_reference_suite(
+    manifest: CaseManifest, references: Sequence[AdjudicatedReference]
+) -> ReferenceSuite:
+    manifest = CaseManifest.model_validate_json(manifest.model_dump_json())
+    cases = {case.case_id: case for case in manifest.cases}
+    selected = {}
+    for reference in references:
+        reference = AdjudicatedReference.model_validate_json(reference.model_dump_json())
+        if reference.case_id not in cases or reference.case_id in selected:
+            raise ValueError("reference is duplicate or outside frozen manifest")
+        case = cases[reference.case_id]
+        if not reference.evidence or (
+            reference.evidence[0].source != case.source
+            or reference.evidence[0].sha256 != case.source_sha256
+            or reference.evidence[0].locator != f"raw:{case.record_id}/{case.column_id}"
+        ):
+            raise ValueError("reference target does not match frozen source case")
+        selected[reference.case_id] = reference
+    for case_id in cases.keys() - selected.keys():
+        selected[case_id] = AdjudicatedReference(
+            case_id=case_id,
+            revision=1,
+            expected_behavior=None,
+            expected_value=None,
+            evidence_status="UNRESOLVED",
+            proposal_digest=None,
+            checker_version=PROOF_VERSION,
+            reason="no independent adjudication",
+        )
+    return ReferenceSuite(
+        manifest_digest=manifest.digest,
+        references=tuple(selected[key] for key in sorted(selected)),
+    )
 
 
 def select_cases(
@@ -287,6 +468,24 @@ def freeze_selection_policy(policy: PilotPolicy, sources: SourceSnapshot) -> str
 
 def write_frozen_selection(path: Path, policy: PilotPolicy, sources: SourceSnapshot) -> str:
     payload = _selection_payload(policy, sources)
+    _write_once(path, payload)
+    return hashlib.sha256(payload).hexdigest()
+
+
+def write_frozen_reference_suite(path: Path, suite: ReferenceSuite) -> str:
+    suite = ReferenceSuite.model_validate_json(suite.model_dump_json())
+    payload = json.dumps(
+        suite.model_dump(mode="json"),
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode()
+    _write_once(path, payload)
+    return suite.digest
+
+
+def _write_once(path: Path, payload: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, name = tempfile.mkstemp(prefix=".selection-", dir=path.parent)
     temporary = Path(name)
@@ -300,4 +499,3 @@ def write_frozen_selection(path: Path, policy: PilotPolicy, sources: SourceSnaps
         os.link(temporary, path)
     finally:
         temporary.unlink()
-    return hashlib.sha256(payload).hexdigest()
