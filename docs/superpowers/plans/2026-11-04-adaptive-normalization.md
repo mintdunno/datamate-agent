@@ -11,7 +11,7 @@
 **Spec:** docs/superpowers/specs/2026-11-04-adaptive-normalization-design.md, revision 3, updated for the user's Polars-only decision on 2026-11-05, retaining revision 2's approved simplification. Read both documents. Source authority remains the active split's rulebook/README/calendar and official competition rules; uncorrected v3 examples do not override them.
 
 **Status:** Revision 3 retains Polars and removes planned Pandas usage; product
-implementation started on 2026-11-05. Tasks 1–3, 5 and 18 are complete; remaining tasks continue on the feature branch. The 24-task structure and existing execution method
+implementation started on 2026-11-05. Tasks 1–3, 5–7 and 18 are complete; remaining tasks continue on the feature branch. The 24-task structure and existing execution method
 are retained. The revision record below distinguishes spec changes from implementation choices.
 
 ## Global Constraints
@@ -304,8 +304,8 @@ assert other_split_used_train_default is False
 **Files:** Modify src/datamate/preparation/catalog.py, src/datamate/preparation/models.py, tests/test_semantic_bindings.py.
 **Interfaces:** validate_bindings(clauses:Sequence[RuleClause],profiles:Sequence[TableProfile],proposals:Sequence[Binding])->SemanticBindings; render_measure(policy:MeasurePolicy,bindings:SemanticBindings)->str for allowlisted typed contract queries only. No arbitrary SQL string supplied by a model is trusted.
 
-- [ ] Write test_combined_table_binds_line_and_order_grain_separately, test_snapshot_is_not_event_history and test_stale_or_conflicting_binding_is_not_accepted. Assert repeated invoice total vs line amount roles differ, snapshot_at stays fixed and incompatible scopes remain unresolved.
-- [ ] Write test_measure_policy_keeps_return_fee_and_warranty_predicates_separate: revenue/debt/visit/work-count policies differ while facts remain; missing time/product detail becomes capability metadata, not invented columns or zeros.
+- [x] Write test_combined_table_binds_line_and_order_grain_separately, test_snapshot_is_not_event_history and test_stale_or_conflicting_binding_is_not_accepted. Assert repeated invoice total vs line amount roles differ, snapshot_at stays fixed and incompatible scopes remain unresolved.
+- [x] Write test_measure_policy_keeps_return_fee_and_warranty_predicates_separate: revenue/debt/visit/work-count policies differ while facts remain; missing time/product detail becomes capability metadata, not invented columns or zeros.
 
 ```python
 assert bound_grains == {"order_header", "order_line"}
@@ -315,17 +315,17 @@ assert unsupported_hour_capability is False
 assert unresolved_conflict_count == 1
 ```
 
-- [ ] Run uv run --locked pytest tests/test_semantic_bindings.py -q; expect missing binding validation.
-- [ ] Implement typed role/grain/status/capability/measure binding validation, allowed predicate vocabulary, source-dependent applicability and dependency graph. New roles are declarations; unknown executable semantics remain UNMAPPED. A raw-value score cannot choose a role against README evidence.
-- [ ] Verify forbidden expression/callback injection rejected and renderer references only validated flat projection IDs.
-- [ ] Commit: feat(preparation): bind grain roles and versioned measure prerequisites.
+- [x] Run uv run --locked pytest tests/test_semantic_bindings.py -q; expect missing binding validation.
+- [x] Implement typed role/grain/status/capability/measure binding validation, allowed predicate vocabulary, source-dependent applicability and dependency graph. New roles are declarations; unknown executable semantics remain UNMAPPED. A raw-value score cannot choose a role against README evidence.
+- [x] Verify forbidden expression/callback injection rejected and renderer references only validated flat projection IDs.
+- [x] Commit: feat(preparation): bind grain roles and versioned measure prerequisites.
 
 ### Task 7: Bounded BM25/fuzzy retrieval with explicit completeness (P2)
 
 **Files:** Modify src/datamate/preparation/catalog.py, pyproject.toml, uv.lock; extend tests/test_catalog.py.
 **Interfaces:** retrieve_clauses(query:str,clauses:Sequence[RuleClause],*,limit:int)->list[ClauseMatch]; required_clauses(bindings:SemanticBindings,scope:str)->set[str]. Versioned tokenizer is owned by src/datamate/preparation/catalog.py, shared for query/corpus.
 
-- [ ] Write test_bm25_retrieval_is_deterministic_but_does_not_drop_unmatched_rules and test_required_rule_dependencies_ignore_top_k_truncation. Assert same ranking/tie-breaks, bounded matches and complete normative ledger/dependency set even when relevant generic clause ranks low.
+- [x] Write test_bm25_retrieval_is_deterministic_but_does_not_drop_unmatched_rules and test_required_rule_dependencies_ignore_top_k_truncation. Assert same ranking/tie-breaks, bounded matches and complete normative ledger/dependency set even when relevant generic clause ranks low.
 
 ```python
 assert ranked_ids_first == ranked_ids_second
@@ -335,10 +335,10 @@ assert low_ranked_required_clause_id in required_dependency_ids
 assert similarity_alone_accepted_binding_count == 0
 ```
 
-- [ ] Run uv run --locked pytest tests/test_catalog.py -q; expect missing retrieval contract.
-- [ ] Add rank-bm25 through uv, lock compatible dependencies, retain RapidFuzz only for candidates. Use explicit versioned Unicode/case/token processing; hashes include tokenizer/index settings. Retrieval never accepts identity/semantic mappings by score.
-- [ ] Run focused tests, full pytest/Ruff and dependency audit after installation. A dependency/compatibility failure is surfaced, not silently replaced by another ranking engine.
-- [ ] Commit: feat(preparation): add versioned bounded lexical rule retrieval.
+- [x] Run uv run --locked pytest tests/test_catalog.py -q; expect missing retrieval contract.
+- [x] Add rank-bm25 through uv, lock compatible dependencies, retain RapidFuzz only for candidates. Use explicit versioned Unicode/case/token processing; hashes include tokenizer/index settings. Retrieval never accepts identity/semantic mappings by score.
+- [x] Run focused tests, full pytest/Ruff and dependency audit after installation. A dependency/compatibility failure is surfaced, not silently replaced by another ranking engine.
+- [x] Commit: feat(preparation): add versioned bounded lexical rule retrieval.
 
 ### Task 8: Typed record batches and Polars/Python operation registry (P3)
 

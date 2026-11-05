@@ -11,10 +11,15 @@ from rank_bm25 import BM25Okapi
 from rapidfuzz import fuzz
 
 from datamate.preparation.models import (
+    Binding,
     ClauseDeclaration,
+    MeasurePolicy,
+    ResolvedBinding,
     RuleClause,
+    SemanticBindings,
     SourceDocument,
     SourceFile,
+    TableProfile,
 )
 
 
@@ -366,3 +371,275 @@ def retrieve_clauses(query: str, clauses: Sequence[RuleClause], *, limit: int) -
         )
     )
     return ranked[:limit]
+
+
+BINDING_VALIDATOR_VERSION = "source-binding-v1"
+_ROLE_HEADERS = {
+    "order_id": {"order_id", "mã hóa đơn", "mã hoá đơn", "ma hoa don", "số hóa đơn"},
+    "product_id": {"product_id", "mã hàng", "ma hang", "mã sản phẩm"},
+    "customer_id": {"customer_id", "mã khách", "mã khách hàng"},
+    "ordered_at": {"ordered_at", "ngày đặt", "ngay dat"},
+    "quantity": {"quantity", "số lượng", "so luong"},
+    "order_total": {"order_total"},
+    "line_net_amount": {"line_net_amount"},
+    "payment_amount": {"payment_amount"},
+    "payment_at": {"payment_at"},
+    "inventory_quantity": {"inventory_quantity"},
+    "unit_cost": {"unit_cost"},
+}
+_ROLE_DECLARATIONS = {
+    "order_total": r"số khách phải trả (?:cho )?cả đơn",
+    "payment_amount": r"số tiền trả lần đó",
+    "unit_cost": r"giá vốn một đơn vị bán",
+    "inventory_quantity": r"tồn cuối ngày cuối có dữ liệu, theo đơn vị cơ bản",
+}
+_GRAIN_ROLES = {
+    "order_header": {"order_id", "order_total"},
+    "order_line": {"order_id", "product_id", "quantity", "line_net_amount"},
+    "payment_event": {"order_id", "payment_at", "payment_amount"},
+    "inventory_snapshot": {"product_id", "inventory_quantity"},
+}
+
+
+def _source_name(value: str) -> str:
+    return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
+
+
+def _binding_citations(binding: Binding, profile: TableProfile, clauses: dict[str, RuleClause]):
+    citations = []
+    header_witnesses = set()
+    for evidence in binding.evidence:
+        if evidence.locator.startswith("header:"):
+            if (
+                evidence.source != profile.source
+                or evidence.sha256 != profile.source_sha256
+                or evidence.locator[7:] not in {f"{profile.table_id}/{c}" for c in binding.columns}
+            ):
+                raise ValueError("header evidence differs from physical source")
+            header_witnesses.add(evidence.locator.rsplit("/", 1)[1])
+            continue
+        if not evidence.locator.startswith("clause:"):
+            raise ValueError("unsupported binding evidence locator")
+        clause = clauses.get(evidence.locator[7:])
+        if clause is None or (
+            clause.source_document.source != evidence.source
+            or clause.source_document.sha256 != evidence.sha256
+            or (clause.line_start, clause.line_end) != (evidence.line_start, evidence.line_end)
+            or clause.quote_sha256 != evidence.quote_sha256
+        ):
+            raise ValueError("clause evidence is stale or incomplete")
+        if (
+            evidence.source.startswith("data/")
+            and evidence.source.split("/")[:2] != profile.source.split("/")[:2]
+        ):
+            raise ValueError("clause belongs to a different business")
+        if clause.status == "CONFLICT":
+            raise ValueError("cited source clause is conflicting")
+        citations.append(clause)
+    return tuple(citations), header_witnesses
+
+
+def validate_bindings(
+    clauses: Sequence[RuleClause], profiles: Sequence[TableProfile], proposals: Sequence[Binding]
+) -> SemanticBindings:
+    """Accept only registered source interpretations; resemblance is not authority."""
+    if len({p.table_id for p in profiles}) != len(profiles):
+        raise ValueError("duplicate physical profiles")
+    if (
+        len({c.source_document.split_id for c in clauses}) != 1
+        or len(
+            {c.source_document.sha256 for c in clauses if c.source_document.source == "rulebook.md"}
+        )
+        != 1
+    ):
+        raise ValueError("bindings require one active split and rulebook")
+    by_table = {profile.table_id: profile for profile in profiles}
+    by_clause = {clause.clause_id: clause for clause in clauses}
+    pending = {p.binding_id: Binding.model_validate_json(p.model_dump_json()) for p in proposals}
+    if len(pending) != len(proposals):
+        raise ValueError("duplicate binding proposals")
+    entries = {}
+    citations = {}
+    for identifier, proposal in pending.items():
+        profile = by_table.get(proposal.table_id)
+        reason = None
+        if profile is None or profile.digest != proposal.profile_digest:
+            reason = "physical profile is missing or stale"
+        elif not set(proposal.columns) <= {c.column_id for c in profile.columns}:
+            reason = "unknown physical column"
+        else:
+            try:
+                citations[identifier] = _binding_citations(proposal, profile, by_clause)
+            except ValueError as exc:
+                reason = str(exc)
+        if reason:
+            entries[identifier] = ResolvedBinding(proposal, "UNRESOLVED", reason)
+    # Multiple target factual grains are allowed; contradictory roles on one cell are not.
+    role_scopes = {}
+    for identifier, proposal in pending.items():
+        if identifier not in entries and proposal.kind == "role":
+            for column in proposal.columns:
+                role_scopes.setdefault((proposal.table_id, column), []).append(identifier)
+    for identifiers in role_scopes.values():
+        if len({pending[i].value for i in identifiers}) > 1:
+            for identifier in identifiers:
+                entries[identifier] = ResolvedBinding(
+                    pending[identifier], "CONFLICT", "conflicting column roles"
+                )
+    while True:
+        progressed = False
+        for identifier, proposal in pending.items():
+            if identifier in entries:
+                continue
+            if any(dependency not in entries for dependency in proposal.dependencies):
+                continue
+            if any(entries[d].status != "ACCEPTED" for d in proposal.dependencies):
+                entries[identifier] = ResolvedBinding(
+                    proposal, "UNRESOLVED", "unaccepted dependency"
+                )
+                progressed = True
+                continue
+            profile = by_table[proposal.table_id]
+            cited, headers = citations[identifier]
+            accepted = False
+            reason = "no registered distinguishing source evidence"
+            if proposal.kind == "role" and len(proposal.columns) == 1:
+                column = next(c for c in profile.columns if c.column_id == proposal.columns[0])
+                header = (
+                    _source_name(column.source_header["value"])
+                    if column.source_header.get("type") == "str"
+                    else ""
+                )
+                accepted = proposal.columns[0] in headers and header in _ROLE_HEADERS.get(
+                    proposal.value, set()
+                )
+                pattern = _ROLE_DECLARATIONS.get(proposal.value)
+                if not accepted and pattern and header:
+                    field = (
+                        r"(?:\*\*"
+                        + re.escape(header)
+                        + r"\*\*|`"
+                        + re.escape(header)
+                        + r"`|(?:^|[;:|])\s*"
+                        + re.escape(header)
+                        + r")"
+                    )
+                    for clause in cited:
+                        text = _source_name(clause.quote).lstrip("- ")
+                        if re.search(field + r"\s+là\s+" + pattern + r"(?:[.;|]|$)", text):
+                            accepted = True
+                reason = "explicit column declaration" if accepted else reason
+            elif proposal.kind == "grain":
+                roles = {
+                    entries[d].binding.value
+                    for d in proposal.dependencies
+                    if entries[d].binding.kind == "role"
+                    and entries[d].binding.table_id == proposal.table_id
+                    and set(entries[d].binding.columns) <= set(proposal.columns)
+                }
+                required = _GRAIN_ROLES.get(proposal.value)
+                accepted = required is not None and required <= roles
+                if proposal.value == "inventory_snapshot":
+                    accepted = (
+                        accepted
+                        and proposal.snapshot_at is not None
+                        and any(
+                            _source_name(clause.quote).strip("- ")
+                            == f"snapshot_at: {proposal.snapshot_at}"
+                            for clause in cited
+                        )
+                    )
+                reason = "target grain from accepted field roles" if accepted else reason
+            elif proposal.kind == "capability" and proposal.value == "hour":
+                selected = [c for c in profile.columns if c.column_id in proposal.columns]
+                # Text dates remain processing uncertainty until independently parsed.
+                date_only = all(
+                    set(c.raw_types) <= {"date", "NoneType"} and c.raw_types.get("date", 0) > 0
+                    for c in selected
+                )
+                accepted = proposal.available is False and date_only
+                reason = "native source precision is day-only" if accepted else reason
+            elif proposal.kind == "capability" and proposal.value == "event_history":
+                accepted = proposal.available is False and any(
+                    entries[d].binding.kind == "grain"
+                    and entries[d].binding.value == "inventory_snapshot"
+                    and entries[d].binding.table_id == proposal.table_id
+                    for d in proposal.dependencies
+                )
+                reason = "fixed snapshot is not event history" if accepted else reason
+            entries[identifier] = ResolvedBinding(
+                proposal,
+                "ACCEPTED" if accepted else "UNRESOLVED",
+                reason,
+                tuple(c.clause_id for c in cited),
+                BINDING_VALIDATOR_VERSION if accepted else None,
+            )
+            progressed = True
+        if not progressed:
+            break
+    for identifier in pending.keys() - entries.keys():
+        entries[identifier] = ResolvedBinding(
+            pending[identifier], "UNRESOLVED", "missing or cyclic dependency"
+        )
+    return SemanticBindings(
+        tuple(entries[k] for k in sorted(entries)),
+        tuple(clauses),
+        tuple(sorted(p.digest for p in profiles)),
+        tuple(sorted(by_table)),
+    )
+
+
+def render_measure(policy: MeasurePolicy, bindings: SemanticBindings) -> str:
+    """Render a contract query only after a separate audit qualifies its projection."""
+    policy = MeasurePolicy.model_validate(policy)
+    if (policy.projection_id, policy.measure, policy.digest) not in bindings.qualified_measures:
+        raise ValueError("measure projection and policy are not qualified")
+    if not set(policy.clause_ids) <= {c.clause_id for c in bindings.clauses}:
+        raise ValueError("unknown measure rule dependency")
+    expressions = {
+        "revenue": 'SUM("line_net_amount")',
+        "debt": 'SUM("debt_amount")',
+        "item_quantity": 'SUM("quantity_base")',
+        "visit_count": 'COUNT(DISTINCT "visit_id")',
+        "work_count": 'COUNT(DISTINCT "work_id")',
+    }
+    predicates = {
+        "exclude_cancelled": 'NOT "cancelled"',
+        "exclude_returned": 'NOT "returned"',
+        "exclude_cod": "\"payment_method\" <> 'cod'",
+        "exclude_marketplace": "\"payment_method\" <> 'marketplace'",
+        "positive_amount": '"debt_amount" > 0',
+        "exclude_fee": 'NOT "is_fee"',
+    }
+    where = " AND ".join(predicates[p] for p in policy.predicates)
+    return (
+        f'SELECT {expressions[policy.measure]} AS "value" FROM "clean"."{policy.projection_id}"'
+        + (" WHERE " + where if where else "")
+    )
+
+
+def required_clauses(bindings: SemanticBindings, scope: str) -> set[str]:
+    """Required source coverage is independent of top-k lexical candidates."""
+    by_id = {entry.binding.binding_id: entry for entry in bindings.entries}
+    if scope not in bindings.table_ids and scope not in by_id:
+        raise ValueError("unknown binding/table scope")
+    # Until reviewed applicability narrows a clause, unknown normative text stays
+    # required. Retrieval scores cannot make source declarations disappear.
+    required = {c.clause_id for c in bindings.clauses if c.status != "NOT_APPLICABLE"}
+    pending = (
+        [scope]
+        if scope in by_id
+        else [key for key, entry in by_id.items() if entry.binding.table_id == scope]
+    )
+    visited = set()
+    while pending:
+        key = pending.pop()
+        if key in visited:
+            continue
+        visited.add(key)
+        entry = by_id.get(key)
+        if entry is None:
+            raise ValueError("missing binding dependency")
+        required.update(entry.clause_ids)
+        pending.extend(entry.binding.dependencies)
+    return required

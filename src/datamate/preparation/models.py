@@ -10,7 +10,7 @@ from typing import Literal, Self
 
 from pydantic import Field, model_validator
 
-from datamate.contracts.base import ContractModel, NonblankString, Sha256
+from datamate.contracts.base import ContractModel, DayString, NonblankString, Sha256
 
 RawValue = str | int | float | bool | bytes | date | datetime | time | None
 
@@ -228,3 +228,107 @@ class TableProfile(ContractModel):
         return hashlib.sha256(
             json.dumps(self.model_dump(mode="json"), sort_keys=True).encode()
         ).hexdigest()
+
+
+class Binding(ContractModel):
+    kind: Literal["role", "grain", "status", "entity", "unit", "measure", "capability"]
+    table_id: NonblankString
+    columns: tuple[NonblankString, ...] = Field(min_length=1)
+    value: NonblankString
+    profile_digest: Sha256
+    evidence: tuple[EvidenceRef, ...] = Field(min_length=1, max_length=50)
+    dependencies: tuple[Sha256, ...] = ()
+    snapshot_at: DayString | None = None
+    available: bool | None = None
+
+    @model_validator(mode="after")
+    def relevant_attributes(self) -> Self:
+        if len(set(self.columns)) != len(self.columns):
+            raise ValueError("duplicate binding columns")
+        if self.snapshot_at is not None and not (
+            self.kind == "grain" and self.value == "inventory_snapshot"
+        ):
+            raise ValueError("snapshot date requires snapshot grain")
+        if self.available is not None and self.kind != "capability":
+            raise ValueError("availability requires a capability declaration")
+        return self
+
+    @property
+    def binding_id(self) -> str:
+        import json
+
+        return sha256(json.dumps(self.model_dump(mode="json"), sort_keys=True).encode()).hexdigest()
+
+
+@dataclass(frozen=True)
+class ResolvedBinding:
+    binding: Binding
+    status: Literal["ACCEPTED", "UNRESOLVED", "CONFLICT"]
+    reason: str
+    clause_ids: tuple[str, ...] = ()
+    acceptance_rule: str | None = None
+
+
+@dataclass(frozen=True)
+class SemanticBindings:
+    entries: tuple[ResolvedBinding, ...]
+    clauses: tuple[RuleClause, ...]
+    profile_digests: tuple[str, ...]
+    table_ids: tuple[str, ...] = ()
+    qualified_measures: tuple[tuple[str, str, str], ...] = ()
+    validator_version: str = "source-binding-v1"
+
+    @property
+    def digest(self) -> str:
+        import json
+
+        payload = {
+            "validator": self.validator_version,
+            "profiles": self.profile_digests,
+            "clauses": sorted(c.clause_id for c in self.clauses),
+            "entries": [
+                (e.binding.binding_id, e.status, e.clause_ids, e.acceptance_rule)
+                for e in self.entries
+            ],
+        }
+        return sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+    @property
+    def accepted(self) -> tuple[Binding, ...]:
+        return tuple(entry.binding for entry in self.entries if entry.status == "ACCEPTED")
+
+    def capability(self, table_id: str, name: str) -> bool | None:
+        values = [
+            b.available
+            for b in self.accepted
+            if b.table_id == table_id and b.kind == "capability" and b.value == name
+        ]
+        return values[0] if len(values) == 1 else None
+
+
+_MEASURE_PREDICATES = {
+    "revenue": ("exclude_cancelled", "exclude_returned"),
+    "debt": ("exclude_cancelled", "exclude_cod", "exclude_marketplace", "positive_amount"),
+    "item_quantity": ("exclude_cancelled", "exclude_returned", "exclude_fee"),
+    "visit_count": (),
+    "work_count": (),
+}
+
+
+class MeasurePolicy(ContractModel):
+    """Reviewed measure vocabulary, distinct from fact retention or query qualification."""
+
+    measure: Literal["revenue", "debt", "item_quantity", "visit_count", "work_count"]
+    projection_id: str = Field(pattern=r"^p_[a-f0-9]{16,64}$")
+    clause_ids: tuple[Sha256, ...] = ()
+    version: Literal["measure-v1"] = "measure-v1"
+
+    @property
+    def predicates(self) -> tuple[str, ...]:
+        return _MEASURE_PREDICATES[self.measure]
+
+    @property
+    def digest(self) -> str:
+        import json
+
+        return sha256(json.dumps(self.model_dump(mode="json"), sort_keys=True).encode()).hexdigest()
