@@ -13,6 +13,7 @@ dependencies = [
     "httpx>=0.28.1",
     "openpyxl>=3.1,<4",
     "polars>=1.30,<2",
+    "psutil>=7.2,<9",
     "pydantic>=2.12,<3",
     "pydantic-ai-slim[openai]>=2.65.0",
     "python-dotenv>=1.2.4",
