@@ -1,6 +1,6 @@
 name = "implementer"
 description = "Scoped implementer for small Python modules, fixtures, tests, and tooling with explicit contracts and non-overlapping file ownership."
-model = "gpt-6.1-terra"
+model = "gpt-6.1-sol"
 model_reasoning_effort = "medium"
 
 developer_instructions = """

@@ -1,7 +1,7 @@
 name = "repo_explorer"
 description = "Read-only focused codebase explorer for locating modules, execution paths, and small data-format samples."
 model = "gpt-6.1-terra"
-model_reasoning_effort = "low"
+model_reasoning_effort = "medium"
 
 developer_instructions = """
 Explore only the relevant repository paths and report concise, verifiable findings.
