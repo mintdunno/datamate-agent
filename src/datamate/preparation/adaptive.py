@@ -34,6 +34,39 @@ class PlanFormatError(ValueError):
     """One malformed model response; a repair consumes another logical request."""
 
 
+def _format_validation_error(error: Exception) -> str:
+    """Expose bounded schema locations/types, never rejected values or arbitrary keys."""
+    fields = set()
+
+    def collect(schema):
+        if isinstance(schema, dict):
+            fields.update(schema.get("properties", {}))
+            if isinstance(schema.get("const"), str):
+                fields.add(schema["const"])
+            for value in schema.values():
+                collect(value)
+        elif isinstance(schema, list):
+            for value in schema:
+                collect(value)
+
+    collect(CleaningPlan.model_json_schema())
+    cause = error
+    for _ in range(5):
+        if isinstance(cause, ValidationError):
+            issues = []
+            for issue in cause.errors(include_input=False, include_context=False)[:8]:
+                location = ".".join(
+                    str(part) if type(part) is int or part in fields else "<extra_field>"
+                    for part in issue["loc"]
+                )
+                issues.append(f"{location}:{issue['type']}")
+            return "; ".join(issues)[:512]
+        cause = cause.__cause__
+        if cause is None:
+            break
+    return type(error).__name__
+
+
 class _TrialRejected(RuntimeError):
     pass
 
@@ -72,6 +105,7 @@ class RecoveryResult:
     accepted_hash: str | None
     rejected_hashes: tuple[str, ...]
     level2_status: Literal["DISABLED", "UNQUALIFIED"]
+    format_errors: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -227,10 +261,20 @@ async def recover_issue(
     level2 = "UNQUALIFIED" if policy.generated_python == "enabled" else "DISABLED"
     attempts = logical = rounds = 0
     rejected: list[str] = []
+    format_errors: list[str] = []
 
     def partial(reason: str) -> RecoveryResult:
         return RecoveryResult(
-            "PARTIAL", reason, rounds, logical, attempts, None, None, tuple(rejected), level2
+            "PARTIAL",
+            reason,
+            rounds,
+            logical,
+            attempts,
+            None,
+            None,
+            tuple(rejected),
+            level2,
+            tuple(format_errors),
         )
 
     if policy.mode != "adaptive":
@@ -270,6 +314,7 @@ async def recover_issue(
                 return partial("shared request budget exhausted")
             if isinstance(proposal_error, PlanFormatError):
                 repair_error = str(proposal_error)[:512]
+                format_errors.append(repair_error)
             elif proposal_error is not None:
                 return partial(f"proposal transport failed: {type(proposal_error).__name__}")
             if candidate is not None:
@@ -308,6 +353,7 @@ async def recover_issue(
             plan_hash,
             tuple(rejected),
             level2,
+            tuple(format_errors),
         )
     return partial("no qualified plan within recovery bounds")
 
@@ -405,6 +451,18 @@ async def cleaning_plan_proposer(
         "table_ids": table_ids,
         "profiles": profiles,
         "accepted_bindings": accepted,
+        "output_contract": (
+            "Copy bindings_digest/profile_digests and accepted IDs exactly. Each steps item "
+            "contains table_id, operation OBJECT, binding_ids ARRAY and evidence ARRAY. "
+            "Put the registered operation name in operation.name; its parameters belong inside "
+            'operation, for example operation={"name":"trim_text","columns":["c0001"]}. '
+            "Use table_id, not scope; use operation, not action. "
+            "Evidence entries copy source/sha256/locator and any supplied span/hash fields. "
+            "preserve_raw has no parameters; trim_text/fill_merged take columns; parse_values "
+            "takes columns and role money|quantity|id|date|datetime; inherit_group takes "
+            "group_key and columns; deduplicate_order takes group_key. Follow the tool schema "
+            "for other registered operations. Do not flatten step parameters."
+        ),
     }
     from pydantic_ai import Agent, UsageLimits
     from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
@@ -462,7 +520,7 @@ async def cleaning_plan_proposer(
                     "combined request exceeds byte budget; reselect evidence explicitly"
                 ) from error
             except (UnexpectedModelBehavior, UsageLimitExceeded, ValidationError) as error:
-                raise PlanFormatError(type(error).__name__) from error
+                raise PlanFormatError(_format_validation_error(error)) from error
             return result.output
 
         yield propose

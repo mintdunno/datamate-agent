@@ -599,6 +599,70 @@ def typed_response(body, candidate):
     )
 
 
+def test_format_repair_receives_safe_field_paths_and_nested_step_contract(tmp_path):
+    bindings = prompt_bindings()
+    recovery_policy = policy(tmp_path, bindings)
+    issue, packet, _, _ = source_packet(tmp_path, bindings_digest=bindings.digest)
+    received = []
+
+    def respond(request):
+        body = json.loads(request.content)
+        context = json.loads(body["messages"][0]["content"].split("\n", 1)[1])
+        received.append(context)
+        assert "table_id" in context["output_contract"]
+        assert "operation" in context["output_contract"]
+        if len(received) == 1:
+            candidate = {
+                "bindings_digest": bindings.digest,
+                "profile_digests": list(bindings.profile_digests),
+                "steps": [
+                    {
+                        "action": "trim_text",
+                        "scope": "table",
+                        "columns": ["sku"],
+                        "private_payload_key": "DO_NOT_ECHO_THIS_VALUE",
+                        "evidence": {},
+                    }
+                ],
+            }
+        else:
+            repair = context["repair_error"]
+            assert "steps.0.table_id:missing" in repair
+            assert "steps.0.operation:missing" in repair
+            assert "steps.0.evidence:tuple_type" in repair
+            assert "private_payload_key" not in repair and "DO_NOT_ECHO_THIS_VALUE" not in repair
+            binding = context["accepted_bindings"][0]
+            candidate = {
+                "bindings_digest": context["bindings_digest"],
+                "profile_digests": context["profile_digests"],
+                "steps": [
+                    {
+                        "table_id": "table",
+                        "operation": {"name": "trim_text", "columns": ["sku"]},
+                        "binding_ids": [binding["binding_id"]],
+                        "evidence": binding["evidence"],
+                    }
+                ],
+            }
+        return typed_response(body, candidate)
+
+    async def execute():
+        async with cleaning_plan_proposer(
+            adaptive_profile(),
+            recovery_policy.budget,
+            bindings,
+            transport=httpx.MockTransport(respond),
+            transport_retries=0,
+        ) as proposer:
+            with pytest.raises(PlanFormatError) as error:
+                await proposer(issue, packet, 0, None)
+            repaired = await proposer(issue, packet, 0, str(error.value))
+            assert repaired.steps[0].operation.name == "trim_text"
+
+    asyncio.run(execute())
+    assert len(received) == recovery_policy.budget.snapshot()["run_attempts"] == 2
+
+
 def test_typed_plan_factory_supplies_accepted_context_for_a_valid_plan(tmp_path):
     bindings = prompt_bindings()
     recovery_policy = policy(tmp_path, bindings)
