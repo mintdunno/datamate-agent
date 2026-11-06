@@ -782,3 +782,30 @@ isolated worktrees for parallel edits. Do not ask to choose this method again.
 After the user reviews this plan, use subagent-driven-development for delegated units
 and executing-plans for main-owned inline work as appropriate to the preserved method.
 No product implementation, model calls or full-data pilot was performed while revising it.
+
+
+## 2026-11-06 continuation: source mapping and escalation
+
+Approved continuation of Tasks 6, 17 and 20 after the fixed eight-case real-data
+probe. Keep existing raw staging, Binding validation, typed operators, shared
+inference budget, isolated candidate builds and qualification. The production
+issue path must distinguish unknown coverage from detected corruption.
+
+1. Persist source-only unmapped-column and unresolved-parse issues, including
+   stable table/column identities. Extend exact, field-scoped README declaration
+   recognition; reject mismatched file sections and conflicting interpretations.
+2. Add one bounded typed role-mapping proposal before plan recovery. Models select
+   columns/roles and existing clause IDs, never acceptance flags or executable code.
+   Rebuild bindings/registry operations only after independent source validation;
+   preserve accepted baseline bindings and READY scopes. Unknown semantics remain
+   unresolved. Use existing accounting; no implicit model/mode/profile changes.
+3. Exercise synthetic positive/negative cases, then compare the same frozen eight
+   real cases, with at most four new HTTP attempts at 25 RPM / concurrency one.
+   Unit-table source proofs require native row evidence; do not manufacture literal
+   declarations or claim name-to-ID joins from similarity. Report unsupported
+   operations as PARTIAL until that proof is implemented and tested.
+
+Acceptance: issue discovery is automatic and inspectable, source-backed model
+mappings can drive existing operators, unsupported proposals cannot remove known
+semantics, raw inputs remain unchanged, and all quality gates precede commits.
+No new framework, gold-label expansion, full training evaluation, merge or push.

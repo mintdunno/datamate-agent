@@ -12,6 +12,7 @@ from duckdb import DuckDBPyConnection
 # Query fragments are fixed application constants, never identifiers from metadata.
 _RELATIONS = {
     "raw": "staging.raw_rows",
+    "issues": "meta.normalization_issues",
     "dispositions": "meta.dispositions",
     "bindings": "meta.bindings",
     "transform_events": "meta.transform_events",
@@ -23,6 +24,7 @@ _RELATIONS = {
 }
 _GROUPS = {
     "dispositions": "kind",
+    "issues": "kind",
     "bindings": "status",
     "transform_events": "status",
     "qualification": "status",

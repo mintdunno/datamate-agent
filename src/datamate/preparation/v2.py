@@ -6,7 +6,7 @@ import os
 import tempfile
 from collections import defaultdict
 from contextlib import closing
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from functools import partial
 from pathlib import Path
 from typing import Literal, Self
@@ -87,8 +87,17 @@ def _json(value: object) -> str:
 def _source_roles(profiles, clauses, supplied: tuple[Binding, ...]) -> SemanticBindings:
     from datamate.preparation.text_state import effective_header
 
-    proposals = list(supplied)
-    occupied = {(b.kind, b.table_id, b.columns) for b in supplied}
+    # Dependency-bearing proposals need native roles before their final validation.
+    proposals = []
+    rejected = []
+    for binding in supplied:
+        if binding.kind == "role" and not binding.dependencies:
+            entry = validate_bindings(clauses, profiles, (binding,)).entries[0]
+            if entry.status != "ACCEPTED":
+                rejected.append(entry)
+                continue
+        proposals.append(binding)
+    occupied = {(b.kind, b.table_id, b.columns) for b in proposals}
     for profile in profiles:
         for column in profile.columns:
             name = _source_name(effective_header(profile, column))
@@ -137,7 +146,12 @@ def _source_roles(profiles, clauses, supplied: tuple[Binding, ...]) -> SemanticB
                     evidence=tuple(dict.fromkeys(e for b in fields for e in b.evidence)),
                 )
             )
-    return validate_bindings(clauses, profiles, proposals)
+    result = validate_bindings(clauses, profiles, proposals)
+    known = {e.binding.binding_id for e in result.entries}
+    return replace(
+        result,
+        entries=(*result.entries, *(e for e in rejected if e.binding.binding_id not in known)),
+    )
 
 
 def registry_plan(bindings: SemanticBindings) -> CleaningPlan:
@@ -521,6 +535,9 @@ def _build(workspace: Path, *, inputs: BusinessInputs, policy: PreparationPolicy
             "INSERT INTO meta.qualification VALUES (?,?,?)",
             [(scope, status, report.report_digest) for scope, status in qualification.statuses],
         )
+        from datamate.preparation.mapping import store_mapping_issues
+
+        issues = store_mapping_issues(db, profiles, bindings)
         calendar_metadata = _calendar(db, calendar_staged, clauses, inputs.split_id)
         db.execute("COMMIT")
         catalog = {
@@ -534,6 +551,7 @@ def _build(workspace: Path, *, inputs: BusinessInputs, policy: PreparationPolicy
             "text_integrity": text_summary(db),
             "decoding": decodings,
             "bindings_digest": bindings.digest,
+            "issues": [issue.model_dump(mode="json") for issue in issues],
             "plan": plan.model_dump(mode="json"),
             "projections": [_published_metadata(db, p) for p in published],
             "qualification": dict(qualification.statuses),

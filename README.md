@@ -276,3 +276,13 @@ run. JSON profiles configure model IDs, backend, URLs, paths, sampling and GPU o
 Local device telemetry is sampled and labeled device-wide; remote provider VRAM and
 model-loading time remain unmeasured. Actual notebook/server qualification requires
 running on that platform. See [model evidence and setup](docs/engineering/model_compatibility.md).
+
+### Source mapping diagnostics
+
+Version-2 preparation records unmapped physical columns and unresolved transforms
+in `meta.normalization_issues` and the catalog `issues` list. An unmapped role means
+unknown semantic coverage, not proof that the value is corrupt. Diagnostics count
+these issues without claiming that all dirty values have been detected. Exact
+field declarations in a business README may prove roles; file-specific sections
+cannot authorize a different file. Rejected supplied mappings do not hide native
+header mappings, and their rejection remains visible in binding diagnostics.

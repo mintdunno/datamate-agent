@@ -412,6 +412,53 @@ _GRAIN_ROLES = {
 }
 
 
+# These are exact source declarations, not fuzzy header guesses.
+_README_ROLE_MEANINGS = {
+    "order_id": r"mã (?:đơn|hóa đơn|hoá đơn)(?: hàng)?",
+    "product_id": r"mã (?:hàng|sản phẩm)",
+    "quantity": r"số lượng(?: sản phẩm)?",
+    "ordered_at": r"ngày (?:bán|đặt hàng)",
+    "unit": r"đơn vị(?: tính)?(?: cơ bản)?",
+    "product_name": r"tên(?: hàng| sản phẩm)",
+    "customer_name": r"tên khách(?: hàng)?(?: \(khách lẻ nếu không lưu\))?",
+    "line_net_amount": r"thành tiền sau giảm(?: giá)?",
+}
+
+
+def _declared_role(header: str, role: str, profile: TableProfile, clause: RuleClause) -> bool:
+    """Prove a complete field declaration in its native file section."""
+    # The nearest file-bearing ancestor remains authoritative under subheadings.
+    headings = []
+    for line in clause.source_document.text.splitlines()[: clause.line_start - 1]:
+        match = _HEADING.match(line)
+        if match:
+            level = len(match.group(1))
+            headings = [(n, value) for n, value in headings if n < level]
+            headings.append((level, _source_name(match.group(2))))
+    filename = _source_name(profile.source.rsplit("/", 1)[-1])
+    for _, section in reversed(headings):
+        named_files = re.findall(r"[^\s`*]+\.(?:xlsx|xls|csv|sqlite|db)\b", section)
+        if named_files:
+            if filename not in named_files:
+                return False
+            break
+    text = re.sub(r"^[-*+]\s+", "", _source_name(clause.quote))
+    field = (
+        r"(?:\*\*"
+        + re.escape(header)
+        + r"\*\*|`"
+        + re.escape(header)
+        + r"`|"
+        + re.escape(header)
+        + r")"
+    )
+    legacy = _ROLE_DECLARATIONS.get(role)
+    if legacy and re.fullmatch(field + r"\s+là\s+" + legacy + r"[.;]?", text):
+        return True
+    meaning = _README_ROLE_MEANINGS.get(role)
+    return bool(meaning and re.fullmatch(field + r"\s*:\s*" + meaning + r"[.;]?", text))
+
+
 def _source_name(value: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
 
@@ -556,21 +603,10 @@ def validate_bindings(
                 accepted = proposal.columns[0] in headers and header in _ROLE_HEADERS.get(
                     proposal.value, set()
                 )
-                pattern = _ROLE_DECLARATIONS.get(proposal.value)
-                if not accepted and pattern and header:
-                    field = (
-                        r"(?:\*\*"
-                        + re.escape(header)
-                        + r"\*\*|`"
-                        + re.escape(header)
-                        + r"`|(?:^|[;:|])\s*"
-                        + re.escape(header)
-                        + r")"
+                if not accepted and header:
+                    accepted = any(
+                        _declared_role(header, proposal.value, profile, c) for c in cited
                     )
-                    for clause in cited:
-                        text = _source_name(clause.quote).lstrip("- ")
-                        if re.search(field + r"\s+là\s+" + pattern + r"(?:[.;|]|$)", text):
-                            accepted = True
                 reason = "explicit column declaration" if accepted else reason
             elif proposal.kind in {"entity", "unit"}:
                 proof_context = SemanticBindings(

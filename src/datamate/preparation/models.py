@@ -14,7 +14,7 @@ from pydantic import Field, model_validator
 from datamate.contracts.base import ContractModel, DayString, NonblankString, Sha256
 
 RawValue = str | int | float | Decimal | bool | bytes | date | datetime | time | None
-BINDING_VALIDATOR_VERSION = "source-binding-v2"
+BINDING_VALIDATOR_VERSION = "source-binding-v3"
 
 
 class UndecodedText(bytes):
