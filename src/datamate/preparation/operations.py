@@ -1,9 +1,11 @@
 """Reviewed operations over immutable raw batches, with bounded native working state."""
 
+import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time
+from decimal import Decimal, localcontext
 from uuid import uuid4
 
 import polars as pl
@@ -12,18 +14,23 @@ from openpyxl.styles.numbers import is_date_format
 
 from datamate.preparation.models import (
     CandidateFact,
+    EvidenceRef,
     LineageEdge,
     RawDisposition,
     RawRecord,
     SemanticBindings,
+    StagedTable,
+    StructuralDecision,
     TypedValue,
 )
 from datamate.preparation.normalization import (
     CleaningPlan,
     CleaningStep,
+    encoded,
     parse_candidates,
     select_parse,
 )
+from datamate.preparation.storage import _decoded, read_staged_table
 
 _PARSE_ROLES = {
     "money": {"order_total", "line_net_amount", "payment_amount", "unit_cost"},
@@ -71,8 +78,10 @@ def validate_plan(plan: CleaningPlan, bindings: SemanticBindings) -> None:
             if binding is None or binding.table_id != step.table_id:
                 raise ValueError("step references unaccepted or cross-table binding")
             referenced.append(binding)
-        if step.operation.name in {"trim_text", "parse_values"}:
-            if not set(step.operation.columns) <= {c for b in referenced for c in b.columns}:
+        if step.operation.name != "preserve_raw":
+            if hasattr(step.operation, "columns") and not set(step.operation.columns) <= {
+                c for b in referenced for c in b.columns
+            }:
                 raise ValueError("operation column has no accepted source binding")
             witnesses = {e.model_dump_json() for b in referenced for e in b.evidence}
             if not {e.model_dump_json() for e in step.evidence} <= witnesses:
@@ -98,6 +107,7 @@ class OperationState:
         self._authorized = frozenset()
         self.binding_entries = {}
         self.source_clauses = ()
+        self.bindings = None
         self._closed = False
         self.reset_boundary(boundary_id)
 
@@ -117,6 +127,7 @@ class OperationState:
             e.binding.binding_id: e for e in bindings.entries if e.status == "ACCEPTED"
         }
         self.source_clauses = bindings.clauses
+        self.bindings = bindings
 
     def reset_boundary(self, boundary_id: str) -> None:
         if self._closed or not boundary_id.strip():
@@ -128,6 +139,7 @@ class OperationState:
         self.dispositions = {}
         self.origins = {}
         self.events = []
+        self.extra_lineage = []
 
     def close(self) -> None:
         if not self._closed:
@@ -163,6 +175,175 @@ class OperationState:
             (r.record_id, c): [step.step_id] for r in batch for c in self.cells[r.record_id]
         }
         self.events = []
+        self.extra_lineage = []
+
+
+def classify_structure(
+    records: Sequence[RawRecord], table: StagedTable, bindings: SemanticBindings
+) -> tuple[StructuralDecision, ...]:
+    if any(r.table_id != table.table_id for r in records):
+        raise ValueError("structure scope differs from physical source")
+    accepted = [b for b in bindings.accepted if b.table_id == table.table_id]
+    roles = [b for b in accepted if b.kind == "role"]
+    markers = [b for b in accepted if b.kind == "structure"]
+    decisions = []
+    for record in records:
+        values = record.source.values
+        evidence = (
+            EvidenceRef(
+                source=table.source.relative_path,
+                sha256=table.source_sha256,
+                locator=f"raw:{record.record_id}/{table.columns[0]}",
+            ),
+        )
+        role, status, scope = "data", "ACCEPTED", None
+        if all(value is None or value == "" for value in values):
+            role = "unresolved" if any(record.source.formulas) else "blank"
+            status = "UNRESOLVED" if role == "unresolved" else "ACCEPTED"
+        elif len({c for binding in roles for c in binding.columns}) >= 2 and tuple(
+            encoded(v) for v in values
+        ) == tuple(encoded(v) for v in table.headers):
+            role = "header"
+        else:
+            for marker in markers:
+                index = table.columns.index(marker.columns[0])
+                value = values[index] if index < len(values) else None
+                if not isinstance(value, str):
+                    continue
+                if marker.value == "summary" and value == marker.marker:
+                    role, status, scope = "summary", "UNRESOLVED", table.table_id
+                    evidence += marker.evidence
+                    break
+                if marker.value == "note" and value.startswith(marker.marker):
+                    critical = {table.columns.index(c) for b in roles for c in b.columns} - {index}
+                    if all(
+                        i >= len(values) or values[i] is None or values[i] == "" for i in critical
+                    ):
+                        role = "note"
+                        evidence += marker.evidence
+                        break
+            if role == "data" and record.kind != "data":
+                role, status = "unresolved", "UNRESOLVED"
+        decisions.append(StructuralDecision(record.record_id, role, status, evidence, scope))
+    complete = len(records) == table.raw_record_count and len(
+        {r.record_id for r in records}
+    ) == len(records)
+    amount_roles = [b for b in roles if b.value == "line_net_amount" and len(b.columns) == 1]
+    if complete and len(amount_roles) == 1:
+        index = table.columns.index(amount_roles[0].columns[0])
+        data_values = [
+            r.source.values[index]
+            for r, d in zip(records, decisions, strict=True)
+            if d.role == "data"
+        ]
+        if data_values and all(
+            type(value) is int or (isinstance(value, Decimal) and value.is_finite())
+            for value in data_values
+        ):
+            with localcontext() as context:
+                context.prec = 100
+                total = sum((Decimal(value) for value in data_values), Decimal(0))
+            for position, (record, decision) in enumerate(zip(records, decisions, strict=True)):
+                value = record.source.values[index]
+                if (
+                    decision.role == "summary"
+                    and (type(value) is int or isinstance(value, Decimal))
+                    and value == total
+                ):
+                    decisions[position] = StructuralDecision(
+                        decision.record_id,
+                        "summary",
+                        "ACCEPTED",
+                        decision.evidence_refs,
+                        decision.anchor_scope,
+                    )
+    return tuple(decisions)
+
+
+def _fill_merged(batch: Sequence[RawRecord], step: CleaningStep, state: OperationState) -> None:
+    table = read_staged_table(state.db, step.table_id)
+    for record in batch:
+        if state.dispositions[record.record_id].kind != "retained":
+            continue
+        for mincol, minrow, maxcol, maxrow in table.merged_ranges or ():
+            column = f"c{mincol:04d}"
+            if column not in step.operation.columns or not minrow <= record.source.number <= maxrow:
+                continue
+            before = state.cells[record.record_id].get(column)
+            if mincol != maxcol:
+                state.events.append(
+                    TransformEvent(
+                        record.record_id,
+                        column,
+                        step.step_id,
+                        "UNRESOLVED",
+                        before,
+                        before,
+                        "horizontal merge has no field-preserving fill",
+                    )
+                )
+                continue
+            key = f"merge:{table.table_id}:{mincol}:{minrow}:{maxrow}"
+            if record.source.number == minrow:
+                if before is not None and record.kind == "data":
+                    state.db.execute(
+                        f'INSERT INTO "{state.table_name}" VALUES (?,?) '
+                        "ON CONFLICT(key) DO UPDATE SET payload=excluded.payload",
+                        [
+                            key,
+                            json.dumps({"value": encoded(before), "record_id": record.record_id}),
+                        ],
+                    )
+                continue
+            row = state.db.execute(
+                f'SELECT payload FROM "{state.table_name}" WHERE key=?', [key]
+            ).fetchone()
+            if not row:
+                state.events.append(
+                    TransformEvent(
+                        record.record_id,
+                        column,
+                        step.step_id,
+                        "UNRESOLVED",
+                        before,
+                        before,
+                        "merged anchor unavailable",
+                    )
+                )
+                continue
+            anchor = json.loads(row[0])
+            value = _decoded(anchor["value"])
+            if before is None:
+                state.cells[record.record_id][column] = value
+                state.origins[record.record_id, column].append(step.step_id)
+                state.extra_lineage.append(
+                    LineageEdge(
+                        "row:" + record.record_id, anchor["record_id"], column, step.step_id
+                    )
+                )
+                state.events.append(
+                    TransformEvent(
+                        record.record_id,
+                        column,
+                        step.step_id,
+                        "APPLIED",
+                        before,
+                        value,
+                        "inside declared vertical merge",
+                    )
+                )
+            elif encoded(before) != encoded(value):
+                state.events.append(
+                    TransformEvent(
+                        record.record_id,
+                        column,
+                        step.step_id,
+                        "UNRESOLVED",
+                        before,
+                        before,
+                        "merged data conflict",
+                    )
+                )
 
 
 def _source_date_context(state: OperationState, table_id: str) -> tuple[dict, datetime | None]:
@@ -199,7 +380,25 @@ def execute_batch(
     if step.operation.name != "preserve_raw" and step.step_id not in state._authorized:
         raise ValueError("transformation is not authorized by a validated plan")
     state._begin_batch(batch, step)
-    if step.operation.name == "trim_text":
+    if step.operation.name == "classify_structure":
+        table = read_staged_table(state.db, step.table_id)
+        for decision in classify_structure(batch, table, state.bindings):
+            kind = (
+                "quarantined"
+                if decision.status == "UNRESOLVED"
+                else "retained"
+                if decision.role == "data"
+                else "structural"
+            )
+            state.dispositions[decision.record_id] = RawDisposition(
+                decision.record_id,
+                kind,
+                "source structure: " + decision.role,
+                decision.evidence_refs,
+            )
+    elif step.operation.name == "fill_merged":
+        _fill_merged(batch, step, state)
+    elif step.operation.name == "trim_text":
         for column in step.operation.columns:
             records = [r for r in batch if state.dispositions[r.record_id].kind == "retained"]
             if any(column not in state.cells[r.record_id] for r in records):
@@ -295,6 +494,6 @@ def execute_batch(
     return BatchResult(
         tuple(facts),
         tuple(state.dispositions[r.record_id] for r in batch),
-        tuple(lineage),
+        tuple([*lineage, *state.extra_lineage]),
         tuple(state.events),
     )

@@ -506,7 +506,19 @@ def validate_bindings(
             cited, headers = citations[identifier]
             accepted = False
             reason = "no registered distinguishing source evidence"
-            if (
+            if proposal.kind == "structure" and proposal.value in {"note", "summary"}:
+                for clause in cited:
+                    prefix = proposal.value + "_marker:"
+                    text = clause.quote.strip().removeprefix("- ")
+                    if text.startswith(prefix):
+                        try:
+                            accepted = json.loads(text[len(prefix) :].strip()) == proposal.marker
+                        except json.JSONDecodeError:
+                            continue
+                        if accepted:
+                            break
+                reason = "explicit structural marker declaration" if accepted else reason
+            elif (
                 proposal.kind == "format"
                 and len(proposal.columns) == 1
                 and proposal.value in FORMAT_GRAMMARS

@@ -11,7 +11,7 @@
 **Spec:** docs/superpowers/specs/2026-11-04-adaptive-normalization-design.md, revision 3, updated for the user's Polars-only decision on 2026-11-05, retaining revision 2's approved simplification. Read both documents. Source authority remains the active split's rulebook/README/calendar and official competition rules; uncorrected v3 examples do not override them.
 
 **Status:** Revision 3 retains Polars and removes planned Pandas usage; product
-implementation started on 2026-11-05. Tasks 1–3, 5–8 and 18 are complete; remaining tasks continue on the feature branch. The 24-task structure and existing execution method
+implementation started on 2026-11-05. Tasks 1–3, 5–10 and 18 are complete; remaining tasks continue on the feature branch. The 24-task structure and existing execution method
 are retained. The revision record below distinguishes spec changes from implementation choices.
 
 ## Global Constraints
@@ -369,8 +369,8 @@ assert none_and_blank_remain_distinct is True
 **Files:** Modify src/datamate/preparation/normalization.py, src/datamate/preparation/operations.py; extend tests/test_normalization.py and tests/test_cleaning_operations.py.
 **Interfaces:** parse_candidates(value:TypedValue,role:str,evidence:Sequence[EvidenceRef],context:dict)->tuple[ParseCandidate,...] in src/datamate/preparation/normalization.py; select_parse(candidates:Sequence[ParseCandidate],binding:Binding)->ParseDecision. Define ParseCandidate/Decision in src/datamate/preparation/models.py; accepted value vs alternatives/unresolved is explicit.
 
-- [ ] Write parametrized tests for 532.000đ,4,544tr,294,7703tr,8tr399,16 076,k-suffix,negative/parenthesized values,units,overflow,1900/1904 serials/fractional day,Vietnamese dates and mixed native/text columns. Expected values come from literal synthetic truth, not this parser.
-- [ ] Add test_equal_arithmetic_does_not_resolve_scale and test_incomplete_source_date_uses_sheet_year_not_question_year. Assert ambiguous1.000 is unresolved without distinguishing evidence; source year/context never hardcodes2026; IDs preserve leading zeros and normalization collisions are reported.
+- [x] Write parametrized tests for 532.000đ,4,544tr,294,7703tr,8tr399,16 076,k-suffix,negative/parenthesized values,units,overflow,1900/1904 serials/fractional day,Vietnamese dates and mixed native/text columns. Expected values come from literal synthetic truth, not this parser.
+- [x] Add test_equal_arithmetic_does_not_resolve_scale and test_incomplete_source_date_uses_sheet_year_not_question_year. Assert ambiguous1.000 is unresolved without distinguishing evidence; source year/context never hardcodes2026; IDs preserve leading zeros and normalization collisions are reported.
 
 ```python
 assert accepted_money_values == [
@@ -386,17 +386,17 @@ assert trimmed_leading_zero_id == "001"
 assert negative_quantity == Decimal("-2")
 ```
 
-- [ ] Run uv run --locked pytest tests/test_normalization.py tests/test_cleaning_operations.py -q; expect missing formats/ambiguity behavior.
-- [ ] Extend existing parser functions with disjoint shape candidates and evidence-backed selection. Preserve signs, scale, units and time; never choose solely by highest parse score or source-total agreement. Unsupported precision stays raw with a blocking event.
-- [ ] Verify boundary dates, no-midnight fabrication, text serial epoch and trim-collision cases.
-- [ ] Commit: feat(normalization): parse mixed formats with explicit ambiguity and precision.
+- [x] Run uv run --locked pytest tests/test_normalization.py tests/test_cleaning_operations.py -q; expect missing formats/ambiguity behavior.
+- [x] Extend existing parser functions with disjoint shape candidates and evidence-backed selection. Preserve signs, scale, units and time; never choose solely by highest parse score or source-total agreement. Unsupported precision stays raw with a blocking event.
+- [x] Verify boundary dates, no-midnight fabrication, text serial epoch and trim-collision cases.
+- [x] Commit: feat(normalization): parse mixed formats with explicit ambiguity and precision.
 
 ### Task 10: Structural rows, headers, merged ranges and summary anchors (P1/P3)
 
 **Files:** Modify src/datamate/preparation/loaders.py, src/datamate/preparation/models.py, src/datamate/preparation/operations.py; extend tests/test_loaders.py, tests/test_excel_regressions.py and tests/test_cleaning_operations.py.
 **Interfaces:** classify_structure(records:Sequence[RawRecord],table:StagedTable,bindings:SemanticBindings)->tuple[StructuralDecision,...]; StructuralDecision in src/datamate/preparation/models.py includes record_id,role,evidence_refs,anchor_scope. Loader exposes merged spans/epoch without executing formulas.
 
-- [ ] Write test_repeated_header_footer_and_summary_are_not_sale_facts and test_merged_data_fill_stays_inside_declared_span. Assert a real-shaped note footer stays raw/structural, repeated header excluded with reason, a legitimate item containing 'tổng' is retained, and unknown summary arithmetic is unresolved rather than dropped.
+- [x] Write test_repeated_header_footer_and_summary_are_not_sale_facts and test_merged_data_fill_stays_inside_declared_span. Assert a real-shaped note footer stays raw/structural, repeated header excluded with reason, a legitimate item containing 'tổng' is retained, and unknown summary arithmetic is unresolved rather than dropped.
 
 ```python
 assert sale_fact_source_ids == {legitimate_item_id}
@@ -406,10 +406,10 @@ assert unknown_anchor_status == "UNRESOLVED"
 assert raw_record_count_after == raw_record_count_before
 ```
 
-- [ ] Run uv run --locked pytest tests/test_excel_regressions.py tests/test_cleaning_operations.py -q; expect missing structure/span classification.
-- [ ] Preserve original rows and add scoped structural decisions/anchors. Require source-role and applicable arithmetic evidence for summary recognition. Sparse/late columns and preamble handling remain faithful; no broad keyword deletion.
-- [ ] Test data merges, header candidate ambiguity, missing formula caches and footer amounts with unknown scale.
-- [ ] Commit: feat(preparation): classify structural rows with source-backed anchors.
+- [x] Run uv run --locked pytest tests/test_excel_regressions.py tests/test_cleaning_operations.py -q; expect missing structure/span classification.
+- [x] Preserve original rows and add scoped structural decisions/anchors. Require source-role and applicable arithmetic evidence for summary recognition. Sparse/late columns and preamble handling remain faithful; no broad keyword deletion.
+- [x] Test data merges, header candidate ambiguity, missing formula caches and footer amounts with unknown scale.
+- [x] Commit: feat(preparation): classify structural rows with source-backed anchors.
 
 ### Task 11: Streaming group inheritance and scoped deduplication (P3)
 

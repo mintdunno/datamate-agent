@@ -72,10 +72,26 @@ class ParseValuesOperation(ContractModel):
     role: Literal["money", "quantity", "id", "date", "datetime"]
 
 
+class ClassifyStructureOperation(ContractModel):
+    name: Literal["classify_structure"] = "classify_structure"
+    version: Literal["1"] = "1"
+
+
+class FillMergedOperation(ContractModel):
+    name: Literal["fill_merged"] = "fill_merged"
+    version: Literal["1"] = "1"
+    columns: tuple[NonblankString, ...] = Field(min_length=1)
+
+
 class CleaningStep(ContractModel):
     table_id: NonblankString
     operation: Annotated[
-        PreserveRawOperation | TrimTextOperation | ParseValuesOperation, Field(discriminator="name")
+        PreserveRawOperation
+        | TrimTextOperation
+        | ParseValuesOperation
+        | ClassifyStructureOperation
+        | FillMergedOperation,
+        Field(discriminator="name"),
     ]
     binding_ids: tuple[Sha256, ...] = ()
     evidence: tuple[Evidence, ...] = ()

@@ -162,6 +162,38 @@ def stage_table(db: DuckDBPyConnection, source: SourceFile, table: SourceTable) 
         raw_count,
         table.headers,
         table.declared_types,
+        table.workbook_epoch,
+        table.merged_ranges,
+    )
+
+
+def read_staged_table(db: DuckDBPyConnection, table_id: str) -> StagedTable:
+    """Rehydrate physical metadata without opening or reparsing source files."""
+    row = db.execute(
+        "SELECT source,source_sha256,table_name,header_row,columns_json,"
+        "row_count,raw_record_count,headers_json,declared_types_json,"
+        "workbook_epoch,merged_ranges_json "
+        "FROM meta.source_tables WHERE table_id=?",
+        [table_id],
+    ).fetchone()
+    if row is None:
+        raise ValueError("unknown staged table")
+    from pathlib import Path
+
+    source = SourceFile(Path(row[0]), row[0], row[1])
+    return StagedTable(
+        table_id,
+        source,
+        row[1],
+        row[2],
+        row[3],
+        tuple(json.loads(row[4])),
+        row[5],
+        row[6],
+        tuple(_decoded(value) for value in json.loads(row[7])),
+        tuple(json.loads(row[8])),
+        row[9],
+        None if row[10] is None else tuple(tuple(span) for span in json.loads(row[10])),
     )
 
 

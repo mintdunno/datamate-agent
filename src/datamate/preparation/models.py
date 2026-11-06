@@ -158,6 +158,17 @@ class StagedTable:
     raw_record_count: int
     headers: tuple[RawValue, ...] = ()
     declared_types: tuple[str | None, ...] = ()
+    workbook_epoch: datetime | None = None
+    merged_ranges: tuple[tuple[int, int, int, int], ...] | None = None
+
+
+@dataclass(frozen=True)
+class StructuralDecision:
+    record_id: str
+    role: Literal["data", "header", "blank", "note", "summary", "unresolved"]
+    status: Literal["ACCEPTED", "UNRESOLVED"]
+    evidence_refs: tuple[EvidenceRef, ...]
+    anchor_scope: str | None = None
 
 
 TypedValue = RawValue
@@ -250,7 +261,9 @@ class TableProfile(ContractModel):
 
 
 class Binding(ContractModel):
-    kind: Literal["role", "grain", "status", "entity", "unit", "measure", "capability", "format"]
+    kind: Literal[
+        "role", "grain", "status", "entity", "unit", "measure", "capability", "format", "structure"
+    ]
     table_id: NonblankString
     columns: tuple[NonblankString, ...] = Field(min_length=1)
     value: NonblankString
@@ -259,11 +272,16 @@ class Binding(ContractModel):
     dependencies: tuple[Sha256, ...] = ()
     snapshot_at: DayString | None = None
     available: bool | None = None
+    marker: NonblankString | None = None
 
     @model_validator(mode="after")
     def relevant_attributes(self) -> Self:
         if len(set(self.columns)) != len(self.columns):
             raise ValueError("duplicate binding columns")
+        if (self.kind == "structure") != (self.marker is not None):
+            raise ValueError(
+                "structural declarations require a marker, and only structures use markers"
+            )
         if self.snapshot_at is not None and not (
             self.kind == "grain" and self.value == "inventory_snapshot"
         ):
