@@ -14,7 +14,14 @@ from pydantic import Field, model_validator
 
 from datamate.contracts.base import ContractModel, NonblankString, Sha256
 from datamate.preparation.models import EvidenceRef as Evidence
-from datamate.preparation.models import ParseCandidate, RawValue, SourceRow, TypedValue
+from datamate.preparation.models import (
+    ParseCandidate,
+    ParseDecision,
+    RawValue,
+    ResolvedBinding,
+    SourceRow,
+    TypedValue,
+)
 
 
 class ColumnPlan(ContractModel):
@@ -58,9 +65,18 @@ class TrimTextOperation(ContractModel):
     columns: tuple[NonblankString, ...] = Field(min_length=1)
 
 
+class ParseValuesOperation(ContractModel):
+    name: Literal["parse_values"] = "parse_values"
+    version: Literal["1"] = "1"
+    columns: tuple[NonblankString, ...] = Field(min_length=1)
+    role: Literal["money", "quantity", "id", "date", "datetime"]
+
+
 class CleaningStep(ContractModel):
     table_id: NonblankString
-    operation: Annotated[PreserveRawOperation | TrimTextOperation, Field(discriminator="name")]
+    operation: Annotated[
+        PreserveRawOperation | TrimTextOperation | ParseValuesOperation, Field(discriminator="name")
+    ]
     binding_ids: tuple[Sha256, ...] = ()
     evidence: tuple[Evidence, ...] = ()
 
@@ -291,13 +307,18 @@ def _numeric_candidates(value: TypedValue, role: str) -> tuple[ParseCandidate, .
     elif role == "money" and thousand:
         spelling = thousand.group(1)
         number = Decimal(spelling.replace(",", "."))
-        possibilities.append((_scaled(number, 3), "thousand_suffix"))
+        suffix_kind = (
+            "decimal_dot" if "." in spelling else "decimal_comma" if "," in spelling else "integer"
+        )
+        possibilities.append((_scaled(number, 3), "thousand_suffix_" + suffix_kind))
         for separator, pattern in ((".", _GROUP_DOT), (",", _GROUP_COMMA)):
             if pattern.fullmatch(spelling):
                 possibilities.append(
                     (
                         _scaled(Decimal(spelling.replace(separator, "")), 3),
-                        "thousand_suffix_grouped",
+                        "thousand_suffix_dot_group"
+                        if separator == "."
+                        else "thousand_suffix_comma_group",
                     )
                 )
     elif _GROUP_SPACE.fullmatch(token):
@@ -309,7 +330,10 @@ def _numeric_candidates(value: TypedValue, role: str) -> tuple[ParseCandidate, .
     elif token.count(",") > 1 and _GROUP_COMMA.fullmatch(token):
         possibilities.append((Decimal(token.replace(",", "")), "comma_group"))
     elif _NUMERIC.fullmatch(token):
-        possibilities.append((Decimal(token.replace(",", ".")), "decimal"))
+        grammar = (
+            "decimal_dot" if "." in token else "decimal_comma" if "," in token else "integer_text"
+        )
+        possibilities.append((Decimal(token.replace(",", ".")), grammar))
         if _GROUP_DOT.fullmatch(token):
             possibilities.append((Decimal(token.replace(".", "")), "dot_group"))
         if _GROUP_COMMA.fullmatch(token):
@@ -359,6 +383,8 @@ def _serial_candidate(value: TypedValue, role: str, epoch: datetime) -> tuple[Pa
 
 
 def _date_candidates(value: TypedValue, role: str, context: dict) -> tuple[ParseCandidate, ...]:
+    if isinstance(value, time):
+        return (ParseCandidate(value, "native_time"),)
     if isinstance(value, datetime):
         return (ParseCandidate(value, "native_datetime"),)
     if type(value) is date:
@@ -444,6 +470,87 @@ def parse_candidates(
             return (raw,)
         return (raw, ParseCandidate(trimmed, "trim_id", None, ("collision_check",)))
     return _date_candidates(value, role, context)
+
+
+FORMAT_GRAMMARS = {
+    "plain": {
+        "integer_text",
+        "decimal_dot",
+        "thousand_suffix_integer",
+        "thousand_suffix_decimal_dot",
+    },
+    "dot_thousands": {
+        "integer_text",
+        "dot_group",
+        "space_group",
+        "currency_dot_group",
+        "thousand_suffix_integer",
+        "thousand_suffix_dot_group",
+    },
+    "comma_thousands": {
+        "integer_text",
+        "decimal_dot",
+        "comma_group",
+        "thousand_suffix_integer",
+        "thousand_suffix_decimal_dot",
+        "thousand_suffix_comma_group",
+    },
+    "vi": {
+        "integer_text",
+        "decimal_comma",
+        "dot_group",
+        "space_group",
+        "currency_dot_group",
+        "million",
+        "million_compact",
+        "thousand_suffix_integer",
+        "thousand_suffix_decimal_comma",
+        "thousand_suffix_dot_group",
+    },
+    "dmy": {"source_dmy", "source_dmy_datetime"},
+    "iso": {"iso_date", "iso_datetime"},
+    "excel_serial": {"excel_serial_date", "excel_serial_datetime"},
+}
+_NATIVE_GRAMMARS = {
+    "native_number",
+    "native_decimal",
+    "native_date",
+    "native_datetime",
+    "native_time",
+    "raw_null",
+    "raw_blank",
+}
+
+
+def select_parse(candidates: Sequence[ParseCandidate], binding: ResolvedBinding) -> ParseDecision:
+    """Selection requires evaluator-independent, accepted production source bindings."""
+    alternatives = tuple(candidates)
+    if not isinstance(binding, ResolvedBinding) or binding.status != "ACCEPTED":
+        return ParseDecision("UNRESOLVED", None, None, alternatives, "binding is not accepted")
+    selected = alternatives
+    if binding.binding.kind == "format":
+        allowed = FORMAT_GRAMMARS.get(binding.binding.value, set()) | _NATIVE_GRAMMARS
+        selected = tuple(candidate for candidate in alternatives if candidate.grammar in allowed)
+    elif binding.binding.kind != "role":
+        return ParseDecision(
+            "UNRESOLVED", None, None, alternatives, "no registered parse interpretation"
+        )
+    if not selected:
+        return ParseDecision("UNRESOLVED", None, None, alternatives, "no source-admissible grammar")
+    if any(not candidate.precision_supported for candidate in selected):
+        return ParseDecision("UNSUPPORTED", None, None, alternatives, "unsupported precision")
+    if len(selected) != 1 or selected[0].context_requirements:
+        return ParseDecision(
+            "UNRESOLVED", None, None, alternatives, "ambiguous or missing distinguishing context"
+        )
+    candidate = selected[0]
+    return ParseDecision(
+        "ACCEPTED",
+        candidate.value,
+        candidate.grammar,
+        alternatives,
+        "unique source-admissible interpretation",
+    )
 
 
 @dataclass(frozen=True)

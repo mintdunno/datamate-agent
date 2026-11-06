@@ -13,6 +13,7 @@ from pydantic import Field, model_validator
 from datamate.contracts.base import ContractModel, DayString, NonblankString, Sha256
 
 RawValue = str | int | float | Decimal | bool | bytes | date | datetime | time | None
+BINDING_VALIDATOR_VERSION = "source-binding-v2"
 
 
 @dataclass(frozen=True)
@@ -179,6 +180,15 @@ class ParseCandidate:
 
 
 @dataclass(frozen=True)
+class ParseDecision:
+    status: Literal["ACCEPTED", "UNRESOLVED", "UNSUPPORTED"]
+    value: TypedValue
+    grammar: str | None
+    alternatives: tuple[ParseCandidate, ...]
+    reason: str
+
+
+@dataclass(frozen=True)
 class RawDisposition:
     record_id: str
     kind: Literal["retained", "structural", "duplicate", "quarantined", "unsupported"]
@@ -240,7 +250,7 @@ class TableProfile(ContractModel):
 
 
 class Binding(ContractModel):
-    kind: Literal["role", "grain", "status", "entity", "unit", "measure", "capability"]
+    kind: Literal["role", "grain", "status", "entity", "unit", "measure", "capability", "format"]
     table_id: NonblankString
     columns: tuple[NonblankString, ...] = Field(min_length=1)
     value: NonblankString
@@ -285,7 +295,7 @@ class SemanticBindings:
     profile_digests: tuple[str, ...]
     table_ids: tuple[str, ...] = ()
     qualified_measures: tuple[tuple[str, str, str], ...] = ()
-    validator_version: str = "source-binding-v1"
+    validator_version: str = BINDING_VALIDATOR_VERSION
 
     @property
     def digest(self) -> str:

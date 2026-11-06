@@ -453,3 +453,42 @@ def test_native_day_precision_is_distinct_from_unparsed_text_dates(tmp_path, nat
     )
     result = validate_bindings(clauses, [profile], [proposal])
     assert result.capability(profile.table_id, "hour") is (False if native else None)
+
+
+def test_format_choice_requires_exact_field_scoped_source_declaration(tmp_path):
+    from datamate.preparation.catalog import validate_bindings
+    from datamate.preparation.models import Binding, EvidenceRef
+    from datamate.preparation.normalization import parse_candidates, select_parse
+
+    _, profile = binding_world(tmp_path)
+    root = tmp_path / "train"
+    book, readme = root / "rulebook.md", root / "data/shop/README.md"
+    readme.write_text("**line_net_amount** number_style: dot_thousands\n", encoding="utf-8")
+    clauses = compile_clauses(
+        (
+            SourceFile(book, "rulebook.md", sha256_file(book)),
+            SourceFile(readme, "data/shop/README.md", sha256_file(readme)),
+        )
+    )
+    clause = next(c for c in clauses if c.source_document.source.endswith("README.md"))
+    ref = EvidenceRef(
+        source=clause.source_document.source,
+        sha256=clause.source_document.sha256,
+        locator=f"clause:{clause.clause_id}",
+        line_start=clause.line_start,
+        line_end=clause.line_end,
+        quote_sha256=clause.quote_sha256,
+    )
+    proposal = Binding(
+        kind="format",
+        value="dot_thousands",
+        table_id=profile.table_id,
+        columns=("c0003",),
+        profile_digest=profile.digest,
+        evidence=(ref,),
+    )
+    result = validate_bindings(clauses, [profile], [proposal])
+    assert len(result.accepted) == 1
+    assert select_parse(parse_candidates("1.000", "money", (), {}), result.entries[0]).value == 1000
+    guessed = proposal.model_copy(update={"value": "plain"})
+    assert not validate_bindings(clauses, [profile], [guessed]).accepted

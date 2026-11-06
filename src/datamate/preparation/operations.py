@@ -1,11 +1,14 @@
 """Reviewed operations over immutable raw batches, with bounded native working state."""
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date, datetime, time
 from uuid import uuid4
 
 import polars as pl
 from duckdb import DuckDBPyConnection
+from openpyxl.styles.numbers import is_date_format
 
 from datamate.preparation.models import (
     CandidateFact,
@@ -15,7 +18,20 @@ from datamate.preparation.models import (
     SemanticBindings,
     TypedValue,
 )
-from datamate.preparation.normalization import CleaningPlan, CleaningStep
+from datamate.preparation.normalization import (
+    CleaningPlan,
+    CleaningStep,
+    parse_candidates,
+    select_parse,
+)
+
+_PARSE_ROLES = {
+    "money": {"order_total", "line_net_amount", "payment_amount", "unit_cost"},
+    "quantity": {"quantity", "inventory_quantity"},
+    "id": {"order_id", "product_id", "customer_id"},
+    "date": {"ordered_at", "payment_at"},
+    "datetime": {"ordered_at", "payment_at"},
+}
 
 
 @dataclass(frozen=True)
@@ -55,12 +71,21 @@ def validate_plan(plan: CleaningPlan, bindings: SemanticBindings) -> None:
             if binding is None or binding.table_id != step.table_id:
                 raise ValueError("step references unaccepted or cross-table binding")
             referenced.append(binding)
-        if step.operation.name == "trim_text":
+        if step.operation.name in {"trim_text", "parse_values"}:
             if not set(step.operation.columns) <= {c for b in referenced for c in b.columns}:
                 raise ValueError("operation column has no accepted source binding")
             witnesses = {e.model_dump_json() for b in referenced for e in b.evidence}
             if not {e.model_dump_json() for e in step.evidence} <= witnesses:
                 raise ValueError("operation evidence does not belong to accepted bindings")
+            if step.operation.name == "parse_values":
+                for column in step.operation.columns:
+                    if not any(
+                        b.kind == "role"
+                        and b.value in _PARSE_ROLES[step.operation.role]
+                        and column in b.columns
+                        for b in referenced
+                    ):
+                        raise ValueError("parse role is not justified by accepted column semantics")
 
 
 class OperationState:
@@ -71,6 +96,8 @@ class OperationState:
         self.table_name = "op_" + uuid4().hex
         db.execute(f'CREATE TEMP TABLE "{self.table_name}"(key VARCHAR PRIMARY KEY,payload JSON)')
         self._authorized = frozenset()
+        self.binding_entries = {}
+        self.source_clauses = ()
         self._closed = False
         self.reset_boundary(boundary_id)
 
@@ -82,8 +109,14 @@ class OperationState:
 
     def authorize(self, plan: CleaningPlan, bindings: SemanticBindings) -> None:
         self._authorized = frozenset()
+        self.binding_entries = {}
+        self.source_clauses = ()
         validate_plan(plan, bindings)
         self._authorized = frozenset(step.step_id for step in plan.steps)
+        self.binding_entries = {
+            e.binding.binding_id: e for e in bindings.entries if e.status == "ACCEPTED"
+        }
+        self.source_clauses = bindings.clauses
 
     def reset_boundary(self, boundary_id: str) -> None:
         if self._closed or not boundary_id.strip():
@@ -132,6 +165,29 @@ class OperationState:
         self.events = []
 
 
+def _source_date_context(state: OperationState, table_id: str) -> tuple[dict, datetime | None]:
+    exists = state.db.execute(
+        "SELECT 1 FROM duckdb_tables() WHERE schema_name='meta' AND table_name='source_tables'"
+    ).fetchone()
+    if not exists:
+        return {}, None
+    info = state.db.execute(
+        "SELECT source,table_name,workbook_epoch FROM meta.source_tables WHERE table_id=?",
+        [table_id],
+    ).fetchone()
+    if not info or not info[0].lower().endswith(".xlsx"):
+        return {}, None
+    years = set(re.findall(r"(?<!\d)([12]\d{3})(?!\d)", info[1]))
+    source_year_rule = any(
+        clause.source_document.source == "rulebook.md"
+        and "ngày không ghi năm" in clause.quote.casefold().replace("*", "")
+        and "năm của sheet" in clause.quote.casefold().replace("*", "")
+        for clause in state.source_clauses
+    )
+    context = {"sheet_year": int(next(iter(years)))} if len(years) == 1 and source_year_rule else {}
+    return context, info[2]
+
+
 def execute_batch(
     batch: Sequence[RawRecord], step: CleaningStep, state: OperationState
 ) -> BatchResult:
@@ -173,6 +229,57 @@ def execute_batch(
                         "trim whitespace" if supported else "non-text source value preserved",
                     )
                 )
+    elif step.operation.name == "parse_values":
+        source_context, epoch = (
+            _source_date_context(state, step.table_id)
+            if step.operation.role in {"date", "datetime"}
+            else ({}, None)
+        )
+        for column in step.operation.columns:
+            witnesses = [
+                state.binding_entries[i]
+                for i in step.binding_ids
+                if column in state.binding_entries[i].binding.columns
+            ]
+            format_bindings = [e for e in witnesses if e.binding.kind == "format"]
+            roles = [e for e in witnesses if e.binding.kind == "role"]
+            if len({entry.binding.value for entry in format_bindings}) > 1:
+                raise ValueError("conflicting source grammars")
+            binding = format_bindings[0] if format_bindings else roles[0]
+            for record in batch:
+                if state.dispositions[record.record_id].kind != "retained":
+                    continue
+                before = state.cells[record.record_id][column]
+                context = dict(source_context)
+                if step.operation.role in {"date", "datetime"} and not isinstance(
+                    before, (date, datetime, time)
+                ):
+                    index = int(column[1:]) - 1
+                    style = (
+                        record.source.formats[index] if index < len(record.source.formats) else None
+                    )
+                    if epoch is not None and (
+                        (style and is_date_format(style)) or binding.binding.value == "excel_serial"
+                    ):
+                        context["workbook_epoch"] = epoch
+                candidates = parse_candidates(before, step.operation.role, step.evidence, context)
+                decision = select_parse(candidates, binding)
+                after = decision.value if decision.status == "ACCEPTED" else before
+                state.cells[record.record_id][column] = after
+                state.origins[record.record_id, column].append(step.step_id)
+                state.events.append(
+                    TransformEvent(
+                        record.record_id,
+                        column,
+                        step.step_id,
+                        "APPLIED" if decision.status == "ACCEPTED" else decision.status,
+                        before,
+                        after,
+                        decision.reason,
+                    )
+                )
+    elif step.operation.name != "preserve_raw":
+        raise ValueError("unregistered operation")
     facts = []
     lineage = []
     for record in batch:

@@ -11,6 +11,7 @@ from rank_bm25 import BM25Okapi
 from rapidfuzz import fuzz
 
 from datamate.preparation.models import (
+    BINDING_VALIDATOR_VERSION,
     Binding,
     ClauseDeclaration,
     MeasurePolicy,
@@ -21,6 +22,7 @@ from datamate.preparation.models import (
     SourceFile,
     TableProfile,
 )
+from datamate.preparation.normalization import FORMAT_GRAMMARS
 
 
 def rule_entries(documents: tuple[SourceFile, ...]) -> list[dict]:
@@ -373,7 +375,6 @@ def retrieve_clauses(query: str, clauses: Sequence[RuleClause], *, limit: int) -
     return ranked[:limit]
 
 
-BINDING_VALIDATOR_VERSION = "source-binding-v1"
 _ROLE_HEADERS = {
     "order_id": {"order_id", "mã hóa đơn", "mã hoá đơn", "ma hoa don", "số hóa đơn"},
     "product_id": {"product_id", "mã hàng", "ma hang", "mã sản phẩm"},
@@ -477,9 +478,11 @@ def validate_bindings(
     # Multiple target factual grains are allowed; contradictory roles on one cell are not.
     role_scopes = {}
     for identifier, proposal in pending.items():
-        if identifier not in entries and proposal.kind == "role":
+        if identifier not in entries and proposal.kind in {"role", "format"}:
             for column in proposal.columns:
-                role_scopes.setdefault((proposal.table_id, column), []).append(identifier)
+                role_scopes.setdefault((proposal.kind, proposal.table_id, column), []).append(
+                    identifier
+                )
     for identifiers in role_scopes.values():
         if len({pending[i].value for i in identifiers}) > 1:
             for identifier in identifiers:
@@ -503,7 +506,31 @@ def validate_bindings(
             cited, headers = citations[identifier]
             accepted = False
             reason = "no registered distinguishing source evidence"
-            if proposal.kind == "role" and len(proposal.columns) == 1:
+            if (
+                proposal.kind == "format"
+                and len(proposal.columns) == 1
+                and proposal.value in FORMAT_GRAMMARS
+            ):
+                column = next(c for c in profile.columns if c.column_id == proposal.columns[0])
+                header = (
+                    _source_name(column.source_header["value"])
+                    if column.source_header.get("type") == "str"
+                    else ""
+                )
+                declarations = {
+                    f"{field} {kind}: {proposal.value}"
+                    for field in (
+                        f"**{header}**",
+                        f"`{header}`",
+                        f"`{_source_name(profile.source_table)}.{header}`",
+                    )
+                    for kind in ("number_style", "date_format", "serial_format")
+                }
+                accepted = bool(header) and any(
+                    _source_name(c.quote).strip("- ") in declarations for c in cited
+                )
+                reason = "explicit field-scoped grammar declaration" if accepted else reason
+            elif proposal.kind == "role" and len(proposal.columns) == 1:
                 column = next(c for c in profile.columns if c.column_id == proposal.columns[0])
                 header = (
                     _source_name(column.source_header["value"])

@@ -1,0 +1,7 @@
+# Repository-scoped Codex subagents configuration for DataMate.
+# Parent model and approvals remain selectable in the Codex session.
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 10
+default_subagent_model = "gpt-6.1-sol"
+default_subagent_reasoning_effort = "medium"

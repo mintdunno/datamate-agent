@@ -138,3 +138,129 @@ def test_stale_plan_is_rejected_and_state_boundary_reset_clears_working_values()
         state.reset_boundary("other")
         second = RawRecord("r", "t", SourceRow(1, ("two",)), "data")
         assert module.execute_batch([second], step, state).facts[0].values["c0001"] == "two"
+
+
+def test_parse_operation_commits_unambiguous_values_and_preserves_ambiguous_raw():
+    from datamate.preparation.models import Binding, EvidenceRef, ResolvedBinding, SemanticBindings
+    from datamate.preparation.normalization import CleaningPlan, CleaningStep
+
+    module = api()
+    witness = EvidenceRef(source="data/shop/x.csv", sha256="a" * 64, locator="header:t/c0001")
+    binding = Binding(
+        kind="role",
+        table_id="t",
+        columns=("c0001",),
+        value="line_net_amount",
+        profile_digest="b" * 64,
+        evidence=(witness,),
+    )
+    bindings = SemanticBindings(
+        (ResolvedBinding(binding, "ACCEPTED", "fixture", (), "v1"),), (), ("b" * 64,), ("t",)
+    )
+    step = CleaningStep(
+        table_id="t",
+        operation={"name": "parse_values", "columns": ("c0001",), "role": "money"},
+        binding_ids=(binding.binding_id,),
+        evidence=(witness,),
+    )
+    plan = CleaningPlan(
+        bindings_digest=bindings.digest, profile_digests=bindings.profile_digests, steps=(step,)
+    )
+    batch = [
+        RawRecord(f"r{i}", "t", SourceRow(i + 1, (v,)), "data")
+        for i, v in enumerate(("532.000đ", "1.000", Decimal("0.10"), "9" * 39))
+    ]
+    with duckdb.connect() as db, module.OperationState(db, "t") as state:
+        state.authorize(plan, bindings)
+        result = module.execute_batch(batch, step, state)
+        assert [f.values["c0001"] for f in result.facts] == [
+            Decimal("532000"),
+            "1.000",
+            Decimal("0.10"),
+            "9" * 39,
+        ]
+        assert [e.status for e in result.events] == [
+            "APPLIED",
+            "UNRESOLVED",
+            "APPLIED",
+            "UNSUPPORTED",
+        ]
+        assert batch[0].source.values == ("532.000đ",)
+
+
+@pytest.mark.parametrize("source_year_rule", [True, False])
+def test_date_operation_requires_active_sheet_year_rule_and_workbook_date_style(
+    tmp_path, source_year_rule
+):
+    from datetime import datetime
+
+    from datamate.preparation.catalog import compile_clauses, validate_bindings
+    from datamate.preparation.discovery import sha256_file
+    from datamate.preparation.models import Binding, EvidenceRef, SourceFile, SourceTable
+    from datamate.preparation.normalization import CleaningPlan, CleaningStep
+    from datamate.preparation.profiling import profile_table
+    from datamate.preparation.storage import create_storage, iter_raw_batches, stage_table
+
+    module = api()
+    book = tmp_path / "rulebook.md"
+    book.write_text(
+        "| Ngày không ghi năm | năm của sheet chứa dòng đó |\n"
+        if source_year_rule
+        else "# Different active book\nNo source-year declaration.\n",
+        encoding="utf-8",
+    )
+    clauses = compile_clauses(
+        (SourceFile(book, "rulebook.md", sha256_file(book)),), split_id="active"
+    )
+    with duckdb.connect() as db:
+        create_storage(db)
+        table = stage_table(
+            db,
+            SourceFile(tmp_path / "x.xlsx", "data/shop/x.xlsx", "a" * 64),
+            SourceTable(
+                "Sales 2025",
+                ("ordered_at",),
+                1,
+                [
+                    SourceRow(2, ("3/6",), formats=("General",)),
+                    SourceRow(3, ("1.5",), formats=("General",)),
+                    SourceRow(4, ("1.5",), formats=("yyyy-mm-dd hh:mm",)),
+                ],
+                workbook_epoch=datetime(1904, 1, 1),
+            ),
+        )
+        profile = profile_table(db, table.table_id)
+        ref = EvidenceRef(
+            source=profile.source,
+            sha256=profile.source_sha256,
+            locator=f"header:{table.table_id}/c0001",
+        )
+        role = Binding(
+            kind="role",
+            table_id=table.table_id,
+            columns=("c0001",),
+            value="ordered_at",
+            profile_digest=profile.digest,
+            evidence=(ref,),
+        )
+        bindings = validate_bindings(clauses, [profile], [role])
+        step = CleaningStep(
+            table_id=table.table_id,
+            operation={"name": "parse_values", "role": "datetime", "columns": ("c0001",)},
+            binding_ids=(role.binding_id,),
+            evidence=(ref,),
+        )
+        plan = CleaningPlan(
+            bindings_digest=bindings.digest, profile_digests=bindings.profile_digests, steps=(step,)
+        )
+        batch = [
+            r for b in iter_raw_batches(db, table.table_id, 1000) for r in b if r.kind == "data"
+        ]
+        with module.OperationState(db, table.table_id) as state:
+            state.authorize(plan, bindings)
+            values = [f.values["c0001"] for f in module.execute_batch(batch, step, state).facts]
+            assert values == [
+                date(2025, 6, 3) if source_year_rule else "3/6",
+                "1.5",
+                datetime(1904, 1, 2, 12),
+            ]

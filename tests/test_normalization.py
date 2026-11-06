@@ -328,3 +328,36 @@ def test_iso_submicrosecond_precision_stays_raw_instead_of_being_truncated():
     candidate = parse_candidates(raw, "datetime", (), {})[0]
     assert candidate.value == raw
     assert not candidate.precision_supported
+
+
+def test_parse_selection_requires_accepted_binding_and_never_selects_by_matching_total():
+    from datamate.preparation.models import Binding, EvidenceRef, ResolvedBinding
+    from datamate.preparation.normalization import parse_candidates, select_parse
+
+    ref = EvidenceRef(source="x.csv", sha256="a" * 64, locator="header:t/c0001")
+    binding = Binding(
+        kind="role",
+        value="line_net_amount",
+        table_id="t",
+        columns=("c0001",),
+        profile_digest="b" * 64,
+        evidence=(ref,),
+    )
+    accepted = ResolvedBinding(binding, "ACCEPTED", "fixture", (), "v1")
+    ambiguous = parse_candidates("1.000", "money", (), {"source_total": 2000})
+    assert select_parse(ambiguous, accepted).status == "UNRESOLVED"
+    clear = parse_candidates("8tr399", "money", (), {})
+    assert select_parse(clear, accepted).value == Decimal("8399000")
+    assert (
+        select_parse(clear, ResolvedBinding(binding, "UNRESOLVED", "no proof")).status
+        == "UNRESOLVED"
+    )
+
+
+def test_native_time_does_not_require_fabricating_a_date():
+    from datetime import time
+
+    from datamate.preparation.normalization import parse_candidates
+
+    value = time(13, 4, 5)
+    assert parse_candidates(value, "datetime", (), {})[0].value is value
