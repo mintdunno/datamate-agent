@@ -24,6 +24,7 @@ from datamate.preparation.models import EvidenceRef, TableProfile
 SELECTOR_VERSION = "stratified-source-v1"
 STRATUM_TARGETS = {"rare": 4, "common": 4, "identity": 4, "temporal": 4, "structure": 4}
 PROOF_VERSION = "source-proof-v5"
+ARTIFACT_OBSERVATION_VERSION = "artifact-observation-v1"
 AssertionStage = Literal[
     "raw", "parsed_cell", "canonical_fact", "disposition", "relationship", "capability"
 ]
@@ -202,6 +203,40 @@ class ProofCheckResult:
     _seal: object = field(default=None, repr=False, compare=False)
 
 
+class ArtifactObservationTarget(ContractModel):
+    """Private, fixed artifact address; never an executable query or learner input."""
+
+    version: Literal["artifact-observation-v1"] = ARTIFACT_OBSERVATION_VERSION
+    stage: AssertionStage
+    scope: Literal["source_cell", "calendar_days", "relationship"]
+    fields: tuple[Literal["value", "date", "holiday", "product_id", "matched_record_id"], ...]
+    cardinality: Literal["one"] = "one"
+    value_type: Literal["date", "datetime", "int"] | None = None
+
+    @model_validator(mode="after")
+    def fixed_target(self) -> Self:
+        if self.scope == "source_cell":
+            valid = self.fields == ("value",) and (
+                (self.stage == "raw" and self.value_type is None)
+                or (self.stage in {"parsed_cell", "canonical_fact"} and self.value_type is not None)
+            )
+        elif self.scope == "calendar_days":
+            valid = (
+                self.stage == "canonical_fact"
+                and self.fields == ("date", "holiday")
+                and self.value_type is None
+            )
+        else:
+            valid = (
+                self.stage == "relationship"
+                and self.fields == ("product_id", "matched_record_id")
+                and self.value_type is None
+            )
+        if not valid:
+            raise ValueError("unsupported artifact observation target")
+        return self
+
+
 class AdjudicatedReference(ContractModel):
     case_id: Sha256
     assertion_stage: AssertionStage = "raw"
@@ -214,6 +249,9 @@ class AdjudicatedReference(ContractModel):
     checker_version: NonblankString
     reason: NonblankString
     evidence: tuple[EvidenceRef, ...] = ()
+    observation_target: ArtifactObservationTarget | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     _checker_seal: object = PrivateAttr(default=None)
 
     @property
@@ -230,6 +268,9 @@ class AdjudicatedReference(ContractModel):
 
 
 class ReferenceSuite(ContractModel):
+    contract_version: Literal["artifact-observation-v1"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     manifest_digest: Sha256
     references: tuple[AdjudicatedReference, ...] = Field(min_length=100, max_length=100)
 
@@ -237,6 +278,11 @@ class ReferenceSuite(ContractModel):
     def distinct_cases(self) -> Self:
         if len({reference.case_id for reference in self.references}) != 100:
             raise ValueError("reference suite requires 100 distinct cases")
+        if self.contract_version is None and any(ref.observation_target for ref in self.references):
+            raise ValueError("artifact observation target requires a versioned suite contract")
+        for ref in self.references:
+            if ref.observation_target and ref.observation_target.stage != ref.assertion_stage:
+                raise ValueError("artifact observation target stage disagrees with reference")
         return self
 
     @property

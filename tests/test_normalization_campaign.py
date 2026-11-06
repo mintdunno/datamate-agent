@@ -54,6 +54,98 @@ def hashes():
     }
 
 
+def artifact_suite(manifest, suite):
+    from datamate.evaluation.normalization import (
+        ARTIFACT_OBSERVATION_VERSION,
+        ArtifactObservationTarget,
+    )
+    from datamate.preparation.models import EvidenceRef
+
+    cases = {case.case_id: case for case in manifest.cases}
+    references = []
+    for reference in suite.references:
+        case = cases[reference.case_id]
+        references.append(
+            reference.model_copy(
+                update={
+                    "expected_value": {"type": "int", "value": "7"},
+                    "observation_target": ArtifactObservationTarget(
+                        stage="parsed_cell",
+                        scope="source_cell",
+                        fields=("value",),
+                        value_type="int",
+                    ),
+                    "evidence": (
+                        EvidenceRef(
+                            source=case.source,
+                            sha256=case.source_sha256,
+                            locator=f"raw:{case.record_id}/{case.column_id}",
+                        ),
+                    ),
+                }
+            )
+        )
+    return ReferenceSuite(
+        contract_version=ARTIFACT_OBSERVATION_VERSION,
+        manifest_digest=manifest.digest,
+        references=tuple(references),
+    )
+
+
+def test_artifact_campaign_prepares_without_private_assertion_targets(tmp_path):
+    from datamate.preparation.pipeline import PreparationPolicy, prepare_business
+
+    policy, sources, manifest, legacy, split_root = world(tmp_path, verified_per_business=1)
+    suite = artifact_suite(manifest, legacy)
+    calls = []
+
+    def prepare(**kwargs):
+        assert set(kwargs) == {"business_id", "cases", "phase", "cache_root", "candidate_digest"}
+        assert all(not hasattr(case, "observation_target") for case in kwargs["cases"])
+        assert "expected_value" not in repr(kwargs)
+        calls.append(kwargs["business_id"])
+        return prepare_business(
+            split_root,
+            kwargs["business_id"],
+            kwargs["cache_root"],
+            split_id="train",
+            policy=PreparationPolicy(),
+        )
+
+    result = api().run_development_baseline(
+        policy,
+        suite,
+        prepare,
+        cases=manifest,
+        sources=sources,
+        split_root=split_root,
+        output_dir=tmp_path / "artifact-baseline",
+        config_hashes=hashes(),
+        candidate_id="artifact",
+    )
+    assert set(calls) == set(policy.development)
+    assert len(result.observations) == 4
+    assert all(len(output.case_results) == 20 for output in result.observations)
+    assert all(output.api_attempts == 0 and output.full_cpu_audit for output in result.observations)
+    assert result.qualification == "PARTIAL"
+
+
+def test_artifact_campaign_rejects_legacy_label_shaped_callback(tmp_path):
+    policy, sources, manifest, legacy, split_root = world(tmp_path)
+    with pytest.raises(ValueError, match="artifact"):
+        api().run_development_baseline(
+            policy,
+            artifact_suite(manifest, legacy),
+            abstaining_prepare([]),
+            cases=manifest,
+            sources=sources,
+            split_root=split_root,
+            output_dir=tmp_path / "legacy-output",
+            config_hashes=hashes(),
+            candidate_id="artifact",
+        )
+
+
 def abstaining_prepare(seen):
     def prepare(*, business_id, cases, phase, cache_root, candidate_digest):
         assert "PRIVATE_SENTINEL" not in repr(

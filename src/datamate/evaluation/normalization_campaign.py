@@ -435,7 +435,10 @@ def _prepare(
     cases: Sequence[NormalizationCase],
     businesses: Sequence[str],
     prepare: Callable[..., BusinessPreparation],
+    suite: ReferenceSuite,
 ) -> tuple[BusinessPreparation, ...]:
+    from datamate.preparation.pipeline import PreparedBusiness
+
     outputs = []
     cache_root = Path(spec.cache_root)
     cache_root.mkdir(parents=True, exist_ok=True)
@@ -450,8 +453,51 @@ def _prepare(
             cache_root=cache_root,
             candidate_digest=spec.config_hashes["code"],
         )
+        if suite.contract_version is not None:
+            if not isinstance(output, PreparedBusiness):
+                raise ValueError("artifact evaluation requires a prepared artifact callback")
+            output = _artifact_business_output(output, business, selected, suite)
         outputs.append(_validated_business_output(output, business, selected))
     return tuple(outputs)
+
+
+def _artifact_business_output(prepared, business, cases, suite) -> BusinessPreparation:
+    from datamate.evaluation.prepared_observations import evaluate_prepared_cases
+
+    catalog = prepared.catalog
+    if (
+        catalog.get("artifact_version") != 2
+        or catalog.get("business_id") != business
+        or catalog.get("fingerprint") != prepared.fingerprint
+    ):
+        raise ValueError("prepared artifact identity or version differs from business")
+    observations = evaluate_prepared_cases(prepared.database, cases, suite)
+    resources = catalog.get("resources", {})
+    attempts = catalog.get("api_attempts")
+    # Closed registry/replay paths make no requests. Missing provider usage on a
+    # future API-backed path stays unknown; it cannot borrow this known zero.
+    usage = catalog.get("token_usage", {})
+    input_tokens = 0 if attempts == 0 else usage.get("input_tokens")
+    output_tokens = 0 if attempts == 0 else usage.get("output_tokens")
+    complete = resources.get("measurements_complete") is True and all(
+        value is not None for value in (attempts, input_tokens, output_tokens)
+    )
+    replay = catalog.get("mode") == "replay"
+    return BusinessPreparation(
+        business_id=business,
+        case_results=observations.case_results,
+        audit_status="PASS" if catalog.get("status") == "PASS" else "PARTIAL",
+        full_cpu_audit=not prepared.cache_hit and bool(catalog.get("audit_digest")),
+        cache_mode="READY_CACHE" if prepared.cache_hit else "REPLAY" if replay else "COLD",
+        accepted_plan_reuse=replay,
+        measurements_complete=complete,
+        elapsed_seconds=resources.get("elapsed_seconds"),
+        peak_rss_bytes=resources.get("peak_rss_bytes"),
+        peak_disk_bytes=resources.get("peak_disk_bytes"),
+        api_attempts=attempts,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+    )
 
 
 def _metrics(outputs: Sequence[BusinessPreparation], suite: ReferenceSuite) -> NormalizationMetrics:
@@ -565,7 +611,7 @@ def run_development_baseline(
     _save(Path(spec.artifact_dir) / "frozen-spec.json", spec)
     outputs: tuple[BusinessPreparation, ...] = ()
     try:
-        outputs = _prepare(spec, development, policy.development, prepare)
+        outputs = _prepare(spec, development, policy.development, prepare, suite)
         score = _metrics(outputs, suite)
         qualification = _qualification(
             outputs, (score,), spec, policy.minimum_determinate, (policy.development,)
@@ -729,7 +775,7 @@ def run_frozen_verification(
         )
         if result_path.exists():
             raise FileExistsError("frozen result already exists; checkpoint cannot be replayed")
-        outputs = _prepare(spec, (*development, *checkpoint), policy.business_ids, prepare)
+        outputs = _prepare(spec, (*development, *checkpoint), policy.business_ids, prepare, suite)
         dev_outputs = [output for output in outputs if output.business_id in policy.development]
         cp_outputs = [output for output in outputs if output.business_id in policy.checkpoint]
         dev_score, cp_score = _metrics(dev_outputs, suite), _metrics(cp_outputs, suite)
