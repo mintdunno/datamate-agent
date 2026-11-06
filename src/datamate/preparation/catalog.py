@@ -4,8 +4,11 @@ import hashlib
 import json
 import re
 import unicodedata
+from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from decimal import Decimal, localcontext
+from fractions import Fraction
 
 from rank_bm25 import BM25Okapi
 from rapidfuzz import fuzz
@@ -14,13 +17,16 @@ from datamate.preparation.models import (
     BINDING_VALIDATOR_VERSION,
     Binding,
     ClauseDeclaration,
+    EntityResolution,
     MeasurePolicy,
+    QuantityReconciliation,
     ResolvedBinding,
     RuleClause,
     SemanticBindings,
     SourceDocument,
     SourceFile,
     TableProfile,
+    UnitResolution,
 )
 from datamate.preparation.normalization import FORMAT_GRAMMARS
 
@@ -625,6 +631,9 @@ def validate_bindings(
         tuple(clauses),
         tuple(sorted(p.digest for p in profiles)),
         tuple(sorted(by_table)),
+        profile_sources=tuple(
+            sorted((p.table_id, p.digest, p.source, p.source_sha256) for p in profiles)
+        ),
     )
 
 
@@ -682,3 +691,237 @@ def required_clauses(bindings: SemanticBindings, scope: str) -> set[str]:
         required.update(entry.clause_ids)
         pending.extend(entry.binding.dependencies)
     return required
+
+
+def _literal_proof(binding: Binding, bindings: SemanticBindings, declaration: str) -> bool:
+    """Require a current, exact source span; a proposed acceptance flag is not proof."""
+    if (
+        binding.profile_digest not in bindings.profile_digests
+        or binding.table_id not in bindings.table_ids
+    ):
+        return False
+    source_profiles = {
+        table_id: (digest, source, source_hash)
+        for table_id, digest, source, source_hash in bindings.profile_sources
+    }
+    profile = source_profiles.get(binding.table_id)
+    if profile is None or profile[0] != binding.profile_digest:
+        return False
+    clauses = {clause.clause_id: clause for clause in bindings.clauses}
+    for evidence in binding.evidence:
+        if not evidence.locator.startswith("clause:"):
+            continue
+        clause = clauses.get(evidence.locator[7:])
+        if clause is None or clause.status == "CONFLICT":
+            continue
+        if (
+            evidence.source.startswith("data/")
+            and evidence.source.split("/")[:2] != profile[1].split("/")[:2]
+        ):
+            continue
+        if (
+            evidence.source == clause.source_document.source
+            and evidence.sha256 == clause.source_document.sha256
+            and evidence.line_start == clause.line_start
+            and evidence.line_end == clause.line_end
+            and evidence.quote_sha256 == clause.quote_sha256
+            and clause.quote.strip() == declaration
+        ):
+            return True
+    return False
+
+
+def _entity_node(value: str) -> tuple[str, str] | None:
+    namespace, separator, native_code = value.partition(":")
+    if not separator or not namespace or not native_code or native_code != native_code.strip():
+        return None
+    return namespace, native_code
+
+
+def accept_entity_links(
+    proposals: Sequence[Binding], bindings: SemanticBindings
+) -> EntityResolution:
+    """Union source-mapped keys while retaining native-code contradictions."""
+    components: dict[tuple[str, str], set[tuple[str, str]]] = {}
+    accepted: list[Binding] = []
+    aliases: list[tuple[str, str, str]] = []
+    conflicts: list[Binding] = []
+    unresolved: list[Binding] = []
+    for proposal in proposals:
+        target = proposal.entity_target
+        scope = proposal.entity_scope
+        relation = proposal.entity_relation
+        if proposal.kind != "entity" or not target or not scope or not relation:
+            unresolved.append(proposal)
+            continue
+        if relation == "relation_key":
+            unresolved.append(proposal)
+            continue
+        label = {"alias": "entity_alias", "explicit_map": "entity_map"}.get(relation, relation)
+        declaration = f"{label}[{scope}]: {proposal.value} = {target}"
+        if not _literal_proof(proposal, bindings, declaration):
+            unresolved.append(proposal)
+            continue
+        if relation == "alias":
+            if _entity_node(proposal.value) is None:
+                unresolved.append(proposal)
+            else:
+                aliases.append((scope, proposal.value, target))
+            continue
+        left = _entity_node(proposal.value)
+        right = _entity_node(target)
+        if left is None or right is None:
+            unresolved.append(proposal)
+            continue
+        if relation == "trusted_code" and left[1] != right[1]:
+            conflicts.append(proposal)
+            continue
+        combined = {(scope, proposal.value), (scope, target)}
+        for key in ((scope, proposal.value), (scope, target)):
+            combined.update(components.get(key, ()))
+        native_by_namespace: dict[str, set[str]] = {}
+        for _, key in combined:
+            node = _entity_node(key)
+            assert node is not None
+            native_by_namespace.setdefault(node[0], set()).add(node[1])
+        if any(len(codes) > 1 for codes in native_by_namespace.values()):
+            conflicts.append(proposal)
+            continue
+        for key in combined:
+            components[key] = combined
+        accepted.append(proposal)
+    distinct = {
+        (next(iter(component))[0], tuple(sorted(key for _, key in component)))
+        for component in components.values()
+    }
+    aliases_by_name: dict[tuple[str, str], set[tuple[tuple[str, str], ...]]] = {}
+    for scope, key, name in aliases:
+        component = tuple(sorted(components.get((scope, key), {(scope, key)})))
+        aliases_by_name.setdefault((scope, name), set()).add(component)
+    ambiguous_aliases = tuple(
+        sorted(scope_name for scope_name, keys in aliases_by_name.items() if len(keys) > 1)
+    )
+    return EntityResolution(
+        tuple(accepted),
+        tuple(sorted(distinct)),
+        tuple(aliases),
+        ambiguous_aliases,
+        tuple(conflicts),
+        tuple(unresolved),
+    )
+
+
+def resolve_units(bindings: SemanticBindings, *, product_id: str, unit: str) -> UnitResolution:
+    """Resolve Decimal source factors through exact rational cycle checks."""
+    proposals = (
+        entry.binding
+        for entry in bindings.entries
+        if entry.binding.kind == "unit"
+        and entry.binding.unit_product == product_id
+        and entry.status != "CONFLICT"
+    )
+    bases: dict[str, Binding] = {}
+    edges: list[tuple[str, str, Decimal, Binding]] = []
+    for proposal in proposals:
+        if (
+            proposal.unit_base is True
+            and proposal.unit_target is None
+            and proposal.unit_factor is None
+        ):
+            declaration = f"unit_base[product={product_id}]: {proposal.value}"
+            if _literal_proof(proposal, bindings, declaration):
+                bases[proposal.value] = proposal
+        elif proposal.unit_base is False and proposal.unit_target and proposal.unit_factor:
+            declaration = (
+                f"unit_factor[product={product_id}]: {proposal.value} = "
+                f"{proposal.unit_factor} {proposal.unit_target}"
+            )
+            if _literal_proof(proposal, bindings, declaration):
+                edges.append((proposal.value, proposal.unit_target, proposal.unit_factor, proposal))
+    if len(bases) > 1:
+        return UnitResolution("CONFLICT", None, None)
+    if not bases:
+        return UnitResolution("UNRESOLVED", None, None)
+    base = next(iter(bases))
+    graph: dict[str, list[tuple[str, Fraction, Binding]]] = {}
+    for source, target, factor, proposal in edges:
+        ratio = Fraction(factor)
+        graph.setdefault(source, []).append((target, ratio, proposal))
+        graph.setdefault(target, []).append((source, 1 / ratio, proposal))
+    factors: dict[str, Fraction] = {}
+    parents: dict[str, tuple[str, Binding]] = {}
+    reachable_from_base: set[str] = set()
+    for start in (base, *sorted(graph)):
+        if start in factors:
+            continue
+        factors[start] = Fraction(1)
+        queue = deque((start,))
+        while queue:
+            current = queue.popleft()
+            for neighbor, ratio, proposal in graph.get(current, ()):
+                candidate = factors[current] / ratio
+                if neighbor in factors:
+                    if factors[neighbor] != candidate:
+                        return UnitResolution("CONFLICT", None, base)
+                else:
+                    factors[neighbor] = candidate
+                    parents[neighbor] = (current, proposal)
+                    queue.append(neighbor)
+        if start == base:
+            reachable_from_base = set(factors)
+    if unit not in reachable_from_base:
+        return UnitResolution("UNRESOLVED", None, base)
+    path: list[Binding] = []
+    current = unit
+    while current != base:
+        current, proposal = parents[current]
+        path.append(proposal)
+    evidence = tuple(
+        ref for proposal in (bases[base], *reversed(path)) for ref in proposal.evidence
+    )
+    ratio = factors[unit]
+    denominator = ratio.denominator
+    powers = []
+    for prime in (2, 5):
+        count = 0
+        while denominator % prime == 0:
+            count += 1
+            denominator //= prime
+        powers.append(count)
+    if denominator != 1 or max(powers) > 38:
+        return UnitResolution("UNRESOLVED", None, base, evidence)
+    scale = max(powers)
+    coefficient = ratio.numerator * 2 ** (scale - powers[0]) * 5 ** (scale - powers[1])
+    digits = tuple(int(char) for char in str(abs(coefficient)))
+    if max(len(digits), scale) > 38:
+        return UnitResolution("UNRESOLVED", None, base, evidence)
+    factor = Decimal((int(coefficient < 0), digits, -scale))
+    return UnitResolution("ACCEPTED", factor, base, evidence)
+
+
+def reconcile_quantity(
+    raw_quantity: Decimal, base_quantity: Decimal, factor: Decimal | None
+) -> QuantityReconciliation:
+    """Compare an independently preconverted value without altering either source value."""
+    values = (
+        (raw_quantity, base_quantity) if factor is None else (raw_quantity, base_quantity, factor)
+    )
+    if any(not value.is_finite() for value in values):
+        raise ValueError("non-finite quantity operand")
+    if any(
+        max(
+            len(v.as_tuple().digits) + max(v.as_tuple().exponent, 0), -min(v.as_tuple().exponent, 0)
+        )
+        > 38
+        for v in values
+    ):
+        raise ValueError("unsupported quantity precision")
+    with localcontext() as context:
+        context.prec = max(1, sum(len(v.as_tuple().digits) for v in values))
+        expected = raw_quantity * factor if factor is not None else None
+    return QuantityReconciliation(
+        raw_quantity,
+        base_quantity,
+        expected,
+        expected != base_quantity if expected is not None else None,
+    )

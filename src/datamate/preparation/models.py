@@ -274,6 +274,13 @@ class Binding(ContractModel):
     snapshot_at: DayString | None = None
     available: bool | None = None
     marker: NonblankString | None = None
+    entity_target: NonblankString | None = None
+    entity_scope: NonblankString | None = None
+    entity_relation: Literal["explicit_map", "trusted_code", "relation_key", "alias"] | None = None
+    unit_product: NonblankString | None = None
+    unit_target: NonblankString | None = None
+    unit_factor: Decimal | None = None
+    unit_base: bool | None = None
 
     @model_validator(mode="after")
     def relevant_attributes(self) -> Self:
@@ -289,6 +296,32 @@ class Binding(ContractModel):
             raise ValueError("snapshot date requires snapshot grain")
         if self.available is not None and self.kind != "capability":
             raise ValueError("availability requires a capability declaration")
+        if (
+            any((self.entity_target, self.entity_scope, self.entity_relation))
+            and self.kind != "entity"
+        ):
+            raise ValueError("entity fields require an entity binding")
+        if (
+            any(
+                value is not None
+                for value in (
+                    self.unit_product,
+                    self.unit_target,
+                    self.unit_factor,
+                    self.unit_base,
+                )
+            )
+            and self.kind != "unit"
+        ):
+            raise ValueError("unit fields require a unit binding")
+        if self.unit_factor is not None and (
+            not self.unit_factor.is_finite() or self.unit_factor <= 0
+        ):
+            raise ValueError("unit factor must be finite and positive")
+        if self.unit_factor is not None:
+            parts = self.unit_factor.as_tuple()
+            if max(len(parts.digits) + max(parts.exponent, 0), -min(parts.exponent, 0)) > 38:
+                raise ValueError("unsupported unit factor precision")
         return self
 
     @property
@@ -315,6 +348,7 @@ class SemanticBindings:
     table_ids: tuple[str, ...] = ()
     qualified_measures: tuple[tuple[str, str, str], ...] = ()
     validator_version: str = BINDING_VALIDATOR_VERSION
+    profile_sources: tuple[tuple[str, str, str, str], ...] = ()
 
     @property
     def digest(self) -> str:
@@ -323,6 +357,7 @@ class SemanticBindings:
         payload = {
             "validator": self.validator_version,
             "profiles": self.profile_digests,
+            "profile_sources": self.profile_sources,
             "clauses": sorted(c.clause_id for c in self.clauses),
             "entries": [
                 (e.binding.binding_id, e.status, e.clause_ids, e.acceptance_rule)
@@ -342,6 +377,32 @@ class SemanticBindings:
             if b.table_id == table_id and b.kind == "capability" and b.value == name
         ]
         return values[0] if len(values) == 1 else None
+
+
+@dataclass(frozen=True)
+class EntityResolution:
+    accepted_links: tuple[Binding, ...]
+    components: tuple[tuple[str, tuple[str, ...]], ...]
+    aliases: tuple[tuple[str, str, str], ...]
+    ambiguous_aliases: tuple[tuple[str, str], ...]
+    conflicts: tuple[Binding, ...]
+    unresolved: tuple[Binding, ...]
+
+
+@dataclass(frozen=True)
+class UnitResolution:
+    status: Literal["ACCEPTED", "UNRESOLVED", "CONFLICT"]
+    factor: Decimal | None
+    base_unit: str | None
+    evidence: tuple[EvidenceRef, ...] = ()
+
+
+@dataclass(frozen=True)
+class QuantityReconciliation:
+    raw_quantity: Decimal
+    base_quantity: Decimal
+    expected_base_quantity: Decimal | None
+    mismatch: bool | None
 
 
 _MEASURE_PREDICATES = {
