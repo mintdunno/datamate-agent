@@ -4,6 +4,7 @@ import csv
 import sqlite3
 from collections.abc import Iterator
 from contextlib import closing
+from dataclasses import asdict
 from itertools import chain, islice
 from pathlib import Path
 from xml.etree.ElementTree import Element, iterparse
@@ -12,14 +13,21 @@ from zipfile import ZipFile
 from openpyxl import load_workbook
 from openpyxl.utils.cell import range_boundaries
 
-from datamate.preparation.models import SourceRow, SourceTable
+from datamate.preparation.decoding import (
+    csv_delimiter,
+    open_csv_source,
+    select_csv_decoder,
+)
+from datamate.preparation.models import SourceRow, SourceTable, UndecodedText
 
 
-def load_tables(path: Path) -> Iterator[SourceTable]:
+def load_tables(
+    path: Path, *, encoding: str | None = None, expected_sha256: str | None = None
+) -> Iterator[SourceTable]:
     """Yield tables whose rows must be consumed before advancing the iterator."""
     suffix = path.suffix.lower()
     if suffix == ".csv":
-        yield from _csv_tables(path)
+        yield from _csv_tables(path, encoding=encoding, expected_sha256=expected_sha256)
     elif suffix == ".xlsx":
         yield from _excel_tables(path)
     elif suffix == ".sqlite":
@@ -28,23 +36,23 @@ def load_tables(path: Path) -> Iterator[SourceTable]:
         raise ValueError(f"Unsupported source suffix: {suffix}")
 
 
-def _csv_tables(path: Path) -> Iterator[SourceTable]:
-    with path.open(encoding="utf-8-sig", newline="") as source:
+def _csv_tables(
+    path: Path, *, encoding: str | None = None, expected_sha256: str | None = None
+) -> Iterator[SourceTable]:
+    decision = select_csv_decoder(path, encoding=encoding, expected_sha256=expected_sha256)
+    with open_csv_source(path, decision) as source:
         sample = source.read(65536)
         source.seek(0)
         if not sample:
             raise ValueError(f"Empty CSV file: {path}")
-        try:
-            delimiter = csv.Sniffer().sniff(sample, delimiters=",;\t").delimiter
-        except csv.Error:
-            delimiter = ","
+        delimiter = csv_delimiter(sample)
         try:
             headers = tuple(next(csv.reader(source, delimiter=delimiter, strict=True), ()))
         except csv.Error as exc:
             raise ValueError(f"Invalid CSV header in {path}: {exc}") from exc
 
     def rows() -> Iterator[SourceRow]:
-        with path.open(encoding="utf-8-sig", newline="") as source:
+        with open_csv_source(path, decision) as source:
             reader = csv.reader(source, delimiter=delimiter, strict=True)
             next(reader, None)
             number = 1
@@ -59,7 +67,7 @@ def _csv_tables(path: Path) -> Iterator[SourceTable]:
             except csv.Error as exc:
                 raise ValueError(f"Invalid CSV record {number + 1} in {path}: {exc}") from exc
 
-    yield SourceTable(path.stem, headers, 1, rows())
+    yield SourceTable(path.stem, headers, 1, rows(), decoding=asdict(decision))
 
 
 def _sheet_merged_ranges(
@@ -183,10 +191,18 @@ def _quote_identifier(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
+def _sqlite_text(raw: bytes) -> str | UndecodedText:
+    try:
+        return raw.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return UndecodedText(raw)
+
+
 def _sqlite_tables(path: Path) -> Iterator[SourceTable]:
     if any(path.with_name(path.name + suffix).exists() for suffix in ("-wal", "-journal")):
         raise ValueError("SQLite requires a checkpointed, journal-free source snapshot")
     connection = sqlite3.connect(path.resolve().as_uri() + "?mode=ro&immutable=1", uri=True)
+    connection.text_factory = _sqlite_text
     try:
         connection.execute("PRAGMA query_only = ON")
         connection.execute("PRAGMA trusted_schema = OFF")

@@ -17,6 +17,10 @@ RawValue = str | int | float | Decimal | bool | bytes | date | datetime | time |
 BINDING_VALIDATOR_VERSION = "source-binding-v2"
 
 
+class UndecodedText(bytes):
+    """Original SQLite TEXT bytes that could not be decoded strictly as UTF-8."""
+
+
 @dataclass(frozen=True)
 class SourceRow:
     number: int
@@ -40,6 +44,7 @@ class SourceTable:
     merged_ranges: tuple[tuple[int, int, int, int], ...] | None = None
     header_formulas: tuple[str | None, ...] = ()
     header_formats: tuple[str | None, ...] = ()
+    decoding: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -317,6 +322,9 @@ class SampleRef(ContractModel):
 class ColumnProfile(ContractModel):
     column_id: str
     source_header: dict[str, object]
+    header_repair: dict[str, object] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     declared_type: str | None
     raw_types: dict[str, int]
     null_count: int = Field(ge=0)
@@ -333,6 +341,7 @@ class TableProfile(ContractModel):
     source: str
     source_sha256: Sha256
     source_table: str
+    source_table_display: str | None = Field(default=None, exclude_if=lambda value: value is None)
     row_count: int = Field(ge=0)
     raw_record_count: int = Field(ge=0)
     record_kinds: dict[str, int]

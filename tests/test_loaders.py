@@ -184,6 +184,18 @@ def test_csv_rejects_empty_and_unterminated_quotes(tmp_path):
         list(load_tables(path))
     path.write_text('a,b\n1,"broken', encoding="utf-8")
     tables = load_tables(path)
-    table = next(tables)
     with pytest.raises(ValueError, match="record|CSV"):
-        list(table.rows)
+        next(tables)
+
+
+def test_sqlite_invalid_text_is_preserved_separately_from_blob(tmp_path):
+    path = tmp_path / "invalid.sqlite"
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE samples(id INTEGER PRIMARY KEY, broken TEXT, binary BLOB)")
+        db.execute("INSERT INTO samples VALUES (1,CAST(x'fffe' AS TEXT),x'fffe')")
+    tables = load_tables(path)
+    table = next(tables)
+    row = next(iter(table.rows))
+    assert bytes(row.values[1]) == bytes(row.values[2]) == b"\xff\xfe"
+    assert type(row.values[1]).__name__ == "UndecodedText"
+    assert type(row.values[2]) is bytes

@@ -20,6 +20,7 @@ from datamate.preparation.models import (
     SourceRow,
     SourceTable,
     StagedTable,
+    UndecodedText,
 )
 from datamate.preparation.normalization import encoded
 
@@ -39,6 +40,7 @@ def _decoded(value: dict):
         "bool": bool,
         "Decimal": Decimal,
         "bytes": bytes.fromhex,
+        "UndecodedText": UndecodedText.fromhex,
         "date": date.fromisoformat,
         "datetime": datetime.fromisoformat,
         "time": time.fromisoformat,
