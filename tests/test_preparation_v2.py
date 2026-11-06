@@ -53,6 +53,11 @@ def test_v2_builds_all_stages_and_publishes_only_qualified_facts(tmp_path):
         assert db.execute("SELECT sum(line_net_amount) FROM clean.order_lines").fetchone()[0] == 180
         assert db.execute("SELECT count(*) FROM meta.profiles").fetchone()[0] == 2
         assert db.execute("SELECT count(*) FROM clean.calendar_days").fetchone()[0] == 2
+        unresolved = db.execute(
+            "SELECT count(*) FROM meta.clauses WHERE status IN ('UNMAPPED','CONFLICT')"
+        ).fetchone()[0]
+        assert unresolved > 0
+        assert result.catalog["rule_coverage"]["unresolved"] == unresolved
     assert result.catalog["status"] == "PARTIAL"  # Unsupported rules are not a business PASS.
 
 

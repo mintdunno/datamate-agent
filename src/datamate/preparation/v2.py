@@ -493,7 +493,7 @@ def _build(workspace: Path, *, inputs: BusinessInputs, policy: PreparationPolicy
             "tables": [p.model_dump(mode="json") for p in profiles],
             "rule_coverage": {
                 "total": len(clauses),
-                "unresolved": sum(c.status == "UNRESOLVED" for c in clauses),
+                "unresolved": sum(c.status in {"UNMAPPED", "CONFLICT"} for c in clauses),
             },
             "audit_digest": report.report_digest,
             "rules": rule_entries(inputs.documents),
