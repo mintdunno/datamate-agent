@@ -1,5 +1,6 @@
 """Streaming source contracts shared by loaders and preparation."""
 
+import json
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, time
@@ -135,6 +136,95 @@ class EvidenceRef(ContractModel):
             self.line_start is not None and self.line_end < self.line_start
         ):
             raise ValueError("evidence line span must be complete and ordered")
+        return self
+
+
+def _solver_source(path: str) -> bool:
+    if path in {"rulebook.md", "calendar.csv"}:
+        return True
+    parts = path.split("/")
+    forbidden = (
+        "answer",
+        "question",
+        "reference",
+        "suite",
+        "label",
+        "checkpoint",
+        "state",
+        ".env",
+    )
+    return (
+        len(parts) >= 3
+        and parts[0] == "data"
+        and all(part not in {"", ".", ".."} for part in parts)
+        and not any(
+            "\\" in part or any(word in part.casefold() for word in forbidden) for part in parts
+        )
+    )
+
+
+class NormalizationIssue(ContractModel):
+    issue_id: NonblankString
+    scope: NonblankString
+    kind: NonblankString
+    detail: NonblankString
+    required_capability: bool = False
+
+    @model_validator(mode="after")
+    def source_only_diagnostic(self) -> Self:
+        if any(
+            token in self.detail.casefold()
+            for token in ("expected_label", "reference_answer", "ground_truth", "checkpoint")
+        ):
+            raise ValueError("reference artifact is not a solver issue")
+        return self
+
+
+class SourceExcerpt(ContractModel):
+    evidence: EvidenceRef
+    text: str
+
+    @model_validator(mode="after")
+    def source_bound(self) -> Self:
+        if not _solver_source(self.evidence.source):
+            raise ValueError("source-only evidence path required")
+        if self.evidence.line_start is None or self.evidence.line_end is None:
+            raise ValueError("source excerpt requires an exact span")
+        if self.evidence.quote_sha256 != sha256(self.text.encode("utf-8")).hexdigest():
+            raise ValueError("excerpt hash differs from cited source span")
+        if any(
+            token in self.text.casefold()
+            for token in ("expected_label_sentinel", "reference_answer_sentinel")
+        ):
+            raise ValueError("reference sentinel is not solver evidence")
+        try:
+            payload = json.loads(self.text)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict) and any(
+            key.casefold() in {"expected_label", "reference_answer", "ground_truth", "score"}
+            for key in payload
+        ):
+            raise ValueError("reference artifact is not solver evidence")
+        return self
+
+
+class EvidencePacket(ContractModel):
+    issue_id: NonblankString
+    bindings_digest: Sha256
+    profile_digests: tuple[Sha256, ...]
+    excerpts: tuple[SourceExcerpt, ...] = Field(min_length=1)
+    omitted: tuple[EvidenceRef, ...] = ()
+
+    @model_validator(mode="after")
+    def source_only_and_bounded(self) -> Self:
+        if any(not _solver_source(item.source) for item in self.omitted):
+            raise ValueError("source-only omitted path required")
+        refs = tuple(item.evidence for item in self.excerpts) + self.omitted
+        if len(set(refs)) != len(refs):
+            raise ValueError("duplicate evidence reference")
+        if len(self.model_dump_json().encode("utf-8")) > 24000:
+            raise ValueError("evidence exceeds 24000 bytes; reselect with explicit omissions")
         return self
 
 
