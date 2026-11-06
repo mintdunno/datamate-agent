@@ -454,6 +454,8 @@ def validate_bindings(
     clauses: Sequence[RuleClause], profiles: Sequence[TableProfile], proposals: Sequence[Binding]
 ) -> SemanticBindings:
     """Accept only registered source interpretations; resemblance is not authority."""
+    from datamate.preparation.text_state import effective_header
+
     if len({p.table_id for p in profiles}) != len(profiles):
         raise ValueError("duplicate physical profiles")
     if (
@@ -534,11 +536,7 @@ def validate_bindings(
                 and proposal.value in FORMAT_GRAMMARS
             ):
                 column = next(c for c in profile.columns if c.column_id == proposal.columns[0])
-                header = (
-                    _source_name(column.source_header["value"])
-                    if column.source_header.get("type") == "str"
-                    else ""
-                )
+                header = _source_name(effective_header(profile, column))
                 declarations = {
                     f"{field} {kind}: {proposal.value}"
                     for field in (
@@ -554,11 +552,7 @@ def validate_bindings(
                 reason = "explicit field-scoped grammar declaration" if accepted else reason
             elif proposal.kind == "role" and len(proposal.columns) == 1:
                 column = next(c for c in profile.columns if c.column_id == proposal.columns[0])
-                header = (
-                    _source_name(column.source_header["value"])
-                    if column.source_header.get("type") == "str"
-                    else ""
-                )
+                header = _source_name(effective_header(profile, column))
                 accepted = proposal.columns[0] in headers and header in _ROLE_HEADERS.get(
                     proposal.value, set()
                 )

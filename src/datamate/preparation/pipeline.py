@@ -76,7 +76,16 @@ def _inputs_manifest(inputs: BusinessInputs, plans: dict[str, TablePlan]) -> dic
         ],
         "plans": {key: value.model_dump(mode="json") for key, value in sorted(plans.items())},
         "versions": {
-            name: version(name) for name in ("duckdb", "openpyxl", "polars", "pydantic", "pytz")
+            name: version(name)
+            for name in (
+                "duckdb",
+                "openpyxl",
+                "polars",
+                "pydantic",
+                "pytz",
+                "ftfy",
+                "charset-normalizer",
+            )
         },
         "python": list(sys.version_info[:3]),
         "implementation": {

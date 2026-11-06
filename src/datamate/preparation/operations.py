@@ -304,6 +304,9 @@ class OperationState:
         }
         self.events = []
         self.extra_lineage = []
+        from datamate.preparation.text_state import apply_text_to_batch
+
+        apply_text_to_batch(self, batch)
 
 
 def classify_structure(
@@ -848,7 +851,33 @@ def execute_batch(
     state._begin_batch(batch, step)
     if step.operation.name == "classify_structure":
         table = read_staged_table(state.db, step.table_id)
-        for decision in classify_structure(batch, table, state.bindings):
+        # Semantic classification sees accepted text; physical equality and
+        # deduplication continue to use the original immutable records.
+        from datamate.preparation.text_state import effective_header
+
+        profiles = {p.table_id: p for p in getattr(state, "text_profiles", ())}
+        if table.table_id in profiles:
+            profile = profiles[table.table_id]
+            table = replace(
+                table,
+                headers=tuple(
+                    effective_header(profile, c)
+                    if c.source_header.get("type") == "str"
+                    else table.headers[i]
+                    for i, c in enumerate(profile.columns)
+                ),
+            )
+        semantic_batch = tuple(
+            replace(
+                record,
+                source=replace(
+                    record.source,
+                    values=tuple(state.cells[record.record_id][c] for c in table.columns),
+                ),
+            )
+            for record in batch
+        )
+        for decision in classify_structure(semantic_batch, table, state.bindings):
             kind = (
                 "quarantined"
                 if decision.status == "UNRESOLVED"

@@ -267,6 +267,11 @@ class StructuredTools:
                                 k: profile[k]
                                 for k in ("table_id", "source", "source_sha256", "source_table")
                             }
+                            | (
+                                {"source_table_display": profile["source_table_display"]}
+                                if profile.get("source_table_display")
+                                else {}
+                            )
                         )
                     table.update(
                         scope=scope,

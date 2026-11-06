@@ -207,6 +207,8 @@ def build_calendar_candidate(
     digest.update(source_sha256.encode("ascii"))
     digest.update(table_id.encode("utf-8"))
     digest.update(json.dumps(columns, sort_keys=True).encode("utf-8"))
+    from datamate.preparation.text_state import effective_values
+
     days = []
     findings = set()
     count = 0
@@ -225,7 +227,7 @@ def build_calendar_candidate(
             try:
                 days.append(
                     _day(
-                        record.source.values,
+                        effective_values(db, record.record_id, record.source.values),
                         columns,
                         indexes,
                         record.record_id,

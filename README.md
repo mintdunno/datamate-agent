@@ -69,6 +69,58 @@ Its `RAW_PROFILE_ONLY_UNQUALIFIED` manifest is a diagnostic, not a query-ready
 normalization artifact. Failed workers keep resource diagnostics and no success
 manifest. Existing preparation CLI behavior remains available during integration.
 
+## Character encoding and Unicode integrity
+
+Version-2 preparation validates CSV decoding before publishing any rows. UTF-8,
+UTF-8 BOM and UTF-16 BOM are recognized with strict decoding. Charset-normalizer
+only proposes candidates; it cannot authorize a decoder. CP1258 can be selected
+with sufficient deterministic Vietnamese evidence. Ambiguous CP1258/Windows-1252
+and BOM-less UTF-16 require an explicit hint bound to the original file SHA-256:
+
+```json
+{
+  "csv_encodings": {
+    "data/shop/sales.csv": {
+      "encoding": "cp1252",
+      "source_sha256": "REPLACE_WITH_SOURCE_SHA256"
+    }
+  }
+}
+```
+
+Add these fields to the preparation policy passed with `--policy`. A conflicting
+BOM, changed hash, invalid byte sequence or invalid CSV rejects the input; no
+`ignore`/`replace` decoding or guessed fallback is used. All records are checked,
+including failures after the preview. A file whose encoding cannot be resolved
+stops preparation because its schema and coverage are unknown.
+
+The default `text_integrity` policy enables conservative mojibake recovery before
+schema matching, NFKC/casefold and working-cell normalization. Ftfy supplies an
+explanation; acceptance additionally requires a bounded, reversible, unambiguous
+strict codec chain, removal of the detected corruption and an idempotent result.
+CSV, Excel and SQLite text, headers, sheet/table labels, metadata and document
+quotes are inspected. Raw bytes, raw values, physical identifiers and original
+rule quotes remain unchanged. Derived labels and accepted working values feed
+schema matching, calendar parsing and qualified SQL consistently.
+
+`meta.text_integrity` records candidates, source coordinates/hashes, policy,
+explanations and validation receipts. Existing transform events/lineage record
+cell changes, and receipt changes invalidate the preparation audit/cache. Clean
+inputs retain their raw identities and logical facts. Set
+`"text_integrity": {"enabled": false}` to disable Unicode inspection/repair;
+CSV decoding remains strict. `auto_repair: false` records candidates without
+accepting repairs. Default limits are 8,192 characters and three encoding layers.
+
+Identifiers and join keys require complete declared SQLite relation evidence,
+injective domains, target uniqueness and agreement across all connected foreign
+keys. Heuristic names only protect keys; they never authorize repairs. Composite,
+implicit-target or otherwise unsupported key proofs remain unresolved. Known
+issues affect dependent columns/projections; independent qualified scopes remain
+available. Mixed text outside the reversible codec family, replacement characters,
+invalid SQLite TEXT bytes and uncertain candidates retain their evidence without
+a guessed repair. Formula expressions, paths, executable metadata and rule quotes
+are report-only. The legacy `--plans` path does not apply Unicode overlays.
+
 ## Offline normalization evaluation utilities
 
 ```bash

@@ -56,7 +56,7 @@ def _optional_tables(db: DuckDBPyConnection) -> tuple[str, ...]:
         row[0]
         for row in db.execute(
             "SELECT table_name FROM information_schema.tables WHERE table_schema='meta' "
-            "AND table_name IN ('bindings','transform_events') ORDER BY table_name"
+            "AND table_name IN ('bindings','transform_events','text_integrity') ORDER BY table_name"
         ).fetchall()
     )
 
@@ -397,6 +397,9 @@ def audit_prepared(db: DuckDBPyConnection, bindings: SemanticBindings) -> AuditR
     descriptors = _descriptors(db)
     if any(row[6] != bindings.digest for row in descriptors):
         raise ValueError("projection binding fingerprint mismatch")
+    from datamate.preparation.text_state import audit_text_state
+
+    text_issues = audit_text_state(db)
     accounting, data_count = _raw_accounting(db)
     findings = [accounting, _fact_lineage(db)]
     by_scope = {row[0]: row for row in descriptors}
@@ -420,6 +423,23 @@ def audit_prepared(db: DuckDBPyConnection, bindings: SemanticBindings) -> AuditR
         blocked = tuple(json.loads(blocked_json))
         columns = tuple(json.loads(columns_json))
         tables = tuple(json.loads(tables_json))
+        findings.append(
+            AuditFinding(
+                "text_integrity",
+                scope,
+                "UNRESOLVED"
+                if any(
+                    set(binding.columns) & text_issues.get(binding.table_id, set())
+                    for binding in bindings.accepted
+                    if binding.table_id in tables
+                    and binding.kind == "role"
+                    and binding.value
+                    in set(columns) | ({"device_imeis_slash"} if "imei" in columns else set())
+                )
+                else "PASS",
+                "source-bound text receipt validation",
+            )
+        )
         findings.append(AuditFinding("applicability", scope, "PASS", "accepted grain binding"))
         coverage = _coverage(db, tables, bindings)
         findings.append(AuditFinding(coverage.check_id, scope, coverage.status, coverage.detail))

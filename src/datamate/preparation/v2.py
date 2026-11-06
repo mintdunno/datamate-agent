@@ -14,7 +14,7 @@ from typing import Literal, Self
 import duckdb
 from pydantic import Field, model_validator
 
-from datamate.contracts.base import ContractModel
+from datamate.contracts.base import ContractModel, Sha256
 from datamate.preparation.catalog import (
     _GRAIN_ROLES,
     _ROLE_HEADERS,
@@ -53,8 +53,14 @@ from datamate.preparation.storage import (
     stage_table,
     store_clauses,
 )
+from datamate.preparation.text_integrity import TextIntegrityPolicy
 
 VERSION = "adaptive-preparation-v2"
+
+
+class SourceEncodingHint(ContractModel):
+    encoding: str
+    source_sha256: Sha256
 
 
 class PreparationPolicy(ContractModel):
@@ -62,6 +68,8 @@ class PreparationPolicy(ContractModel):
     binding_proposals: tuple[Binding, ...] = ()
     frozen_plan: CleaningPlan | None = None
     limits: PreparationLimits = Field(default_factory=PreparationLimits)
+    text_integrity: TextIntegrityPolicy = Field(default_factory=TextIntegrityPolicy)
+    csv_encodings: dict[str, SourceEncodingHint] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def replay_is_explicit(self) -> Self:
@@ -77,12 +85,13 @@ def _json(value: object) -> str:
 
 
 def _source_roles(profiles, clauses, supplied: tuple[Binding, ...]) -> SemanticBindings:
+    from datamate.preparation.text_state import effective_header
+
     proposals = list(supplied)
     occupied = {(b.kind, b.table_id, b.columns) for b in supplied}
     for profile in profiles:
         for column in profile.columns:
-            header = column.source_header
-            name = _source_name(header["value"]) if header.get("type") == "str" else ""
+            name = _source_name(effective_header(profile, column))
             for role, names in _ROLE_HEADERS.items():
                 key = ("role", profile.table_id, (column.column_id,))
                 if name not in names or key in occupied:
@@ -443,15 +452,52 @@ def _build(workspace: Path, *, inputs: BusinessInputs, policy: PreparationPolicy
         )
         profiles = []
         calendar = next(s for s in inputs.documents if s.relative_path == "calendar.csv")
+        decodings = {}
+        available_csv = {
+            source.relative_path
+            for source in (*inputs.sources, calendar)
+            if source.path.suffix.lower() == ".csv"
+        }
+        if set(policy.csv_encodings) - available_csv:
+            raise ValueError("encoding hint is outside active CSV inventory")
         for source in (*inputs.sources, calendar):
-            with closing(load_tables(source.path)) as tables:
+            hint = policy.csv_encodings.get(source.relative_path)
+            if hint is not None and hint.source_sha256 != source.sha256:
+                raise ValueError("encoding hint source hash is stale")
+            with closing(
+                load_tables(
+                    source.path,
+                    encoding=hint.encoding if hint else None,
+                    expected_sha256=source.sha256,
+                )
+            ) as tables:
                 for table in tables:
                     staged = stage_table(db, source, table)
+                    if table.decoding is not None:
+                        decodings[staged.table_id] = table.decoding
                     if source == calendar:
                         calendar_staged = staged
                     profile = profile_table(db, staged.table_id, batch_size=limits.batch_size)
                     profiles.append(profile)
+        from datamate.preparation.text_state import (
+            annotate_profiles,
+            finalize_text_state,
+            prepare_text_state,
+            store_decoding_receipt,
+            text_summary,
+        )
+
+        prepare_text_state(db, inputs, policy.text_integrity)
+        for table_id, decoding in decodings.items():
+            store_decoding_receipt(db, table_id, decoding)
+        profiles = list(annotate_profiles(db, profiles, policy.text_integrity))
+        for profile in profiles:
+            db.execute(
+                "INSERT OR REPLACE INTO meta.profiles VALUES (?,?)",
+                [profile.table_id, profile.model_dump_json()],
+            )
         bindings = _source_roles(profiles, clauses, policy.binding_proposals)
+        finalize_text_state(db, bindings)
         if bindings.entries:
             db.executemany(
                 "INSERT INTO meta.bindings VALUES (?,?,?,?)",
@@ -485,6 +531,8 @@ def _build(workspace: Path, *, inputs: BusinessInputs, policy: PreparationPolicy
             "mode": policy.mode,
             "status": "PARTIAL",
             "api_attempts": 0,
+            "text_integrity": text_summary(db),
+            "decoding": decodings,
             "bindings_digest": bindings.digest,
             "plan": plan.model_dump(mode="json"),
             "projections": [_published_metadata(db, p) for p in published],
