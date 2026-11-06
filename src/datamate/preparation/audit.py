@@ -51,6 +51,16 @@ class Qualification:
         return dict(self.statuses).get(scope, "UNRESOLVED")
 
 
+def _optional_tables(db: DuckDBPyConnection) -> tuple[str, ...]:
+    return tuple(
+        row[0]
+        for row in db.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema='meta' "
+            "AND table_name IN ('bindings','transform_events') ORDER BY table_name"
+        ).fetchall()
+    )
+
+
 def _state_digest(db: DuckDBPyConnection) -> str:
     digest = hashlib.sha256()
     candidates = db.execute(
@@ -60,7 +70,11 @@ def _state_digest(db: DuckDBPyConnection) -> str:
     allowed = {item[0] for item in _SCOPES.values()}
     if any(scope not in allowed or name != "candidate_" + scope for scope, name in candidates):
         raise ValueError("unknown candidate table in audit state")
-    tables = (*_STATE_TABLES, *((f'meta."{name}"', "fact_id") for _, name in candidates))
+    tables = (
+        *_STATE_TABLES,
+        *((f'meta."{name}"', "ALL") for name in _optional_tables(db)),
+        *((f'meta."{name}"', "fact_id") for _, name in candidates),
+    )
     for table, order in tables:
         digest.update(table.encode())
         cursor = db.execute(f"SELECT * FROM {table} ORDER BY {order}")
@@ -137,7 +151,92 @@ def _fact_lineage(db: DuckDBPyConnection) -> AuditFinding:
     )
 
 
-def _coverage(db: DuckDBPyConnection, tables: tuple[str, ...]) -> AuditFinding:
+def _duplicate_scope(bindings: SemanticBindings, table_id: str) -> tuple[AuditStatus, str | None]:
+    local = [binding for binding in bindings.accepted if binding.table_id == table_id]
+    grains = {binding.value for binding in local if binding.kind == "grain"}
+    # Order headers and components may share the physical order-line source.
+    order_grains = {
+        "order_line",
+        "order_header",
+        "order_line_device",
+        "shipping_component",
+        "fee_component",
+    }
+    if grains - order_grains or (grains and "order_line" not in grains):
+        return "FAIL", None
+    keys = [
+        binding.columns
+        for binding in local
+        if binding.kind == "role" and binding.value == "order_id"
+    ]
+    if "order_line" not in grains or len(keys) != 1 or len(keys[0]) != 1:
+        return "UNRESOLVED", None
+    column = keys[0][0]
+    if any(
+        binding.kind == "role" and binding.value != "order_id" and column in binding.columns
+        for binding in local
+    ):
+        return "UNRESOLVED", None
+    return "PASS", column
+
+
+def _duplicate_proof(row: tuple, scope_status: AuditStatus, key_column: str | None) -> AuditStatus:
+    (
+        link,
+        table_id,
+        ordinal,
+        values_json,
+        formulas_json,
+        formats_json,
+        original_table,
+        original_ordinal,
+        original_kind,
+        original_disposition,
+        original_values,
+        original_formulas,
+        original_formats,
+        columns_json,
+    ) = row
+    if not link:
+        return "UNRESOLVED"
+    if (
+        original_table != table_id
+        or original_ordinal is None
+        or original_ordinal >= ordinal
+        or original_kind != "data"
+        or original_disposition != "retained"
+    ):
+        return "FAIL"
+    # Compare the full typed raw payload, never parsed candidate values or signatures.
+    if any(
+        json.loads(left) != json.loads(right)
+        for left, right in (
+            (values_json, original_values),
+            (formulas_json, original_formulas),
+            (formats_json, original_formats),
+        )
+    ):
+        return "FAIL"
+    if scope_status != "PASS":
+        return scope_status
+    columns = json.loads(columns_json)
+    values = json.loads(values_json)
+    if key_column not in columns or len(values) != len(columns):
+        return "UNRESOLVED"
+    raw_key = values[columns.index(key_column)]
+    # Inherited blank keys need an independent source-scope proof, unavailable here.
+    if (
+        raw_key.get("type") != "str"
+        or not isinstance(raw_key.get("value"), str)
+        or not raw_key["value"].strip()
+    ):
+        return "UNRESOLVED"
+    return "PASS"
+
+
+def _coverage(
+    db: DuckDBPyConnection, tables: tuple[str, ...], bindings: SemanticBindings
+) -> AuditFinding:
     if not tables:
         return AuditFinding("declared_coverage", "", "UNRESOLVED", "no source tables")
     placeholders = ",".join("?" for _ in tables)
@@ -150,19 +249,72 @@ def _coverage(db: DuckDBPyConnection, tables: tuple[str, ...]) -> AuditFinding:
         f"WHERE r.kind='data' AND r.table_id IN ({placeholders})",
         list(tables),
     ).fetchone()
-    if declared == 0:
-        status = "UNRESOLVED"
-    elif retained == declared:
-        status = "PASS"
-    else:
-        # Duplicate-collapse proof is unavailable in this storage version.
-        status = "UNRESOLVED"
+    proven = invalid = 0
+    has_link = db.execute(
+        "SELECT count(*) FROM information_schema.columns WHERE table_schema='meta' "
+        "AND table_name='dispositions' AND column_name='duplicate_of'"
+    ).fetchone()[0]
+    if duplicate and has_link:
+        source_scopes = {table: _duplicate_scope(bindings, table) for table in tables}
+        cursor = db.execute(
+            "SELECT d.duplicate_of,r.table_id,r.ordinal,r.values_json,"
+            "r.formulas_json,r.formats_json,"
+            "o.table_id,o.ordinal,o.kind,od.kind,o.values_json,"
+            "o.formulas_json,o.formats_json,t.columns_json "
+            "FROM staging.raw_rows r JOIN meta.dispositions d ON r.record_id=d.record_id "
+            "JOIN meta.source_tables t ON t.table_id=r.table_id "
+            "LEFT JOIN staging.raw_rows o ON o.record_id=d.duplicate_of "
+            "LEFT JOIN meta.dispositions od ON od.record_id=o.record_id "
+            f"WHERE r.kind='data' AND d.kind='duplicate' AND r.table_id IN ({placeholders})",
+            list(tables),
+        )
+        while rows := cursor.fetchmany(1000):
+            for row in rows:
+                proof = _duplicate_proof(row, *source_scopes[row[1]])
+                proven += proof == "PASS"
+                invalid += proof == "FAIL"
+    status: AuditStatus = (
+        "FAIL"
+        if invalid
+        else "PASS"
+        if declared and retained + proven == declared
+        else "UNRESOLVED"
+    )
     return AuditFinding(
         "declared_coverage",
         "",
         status,
-        f"declared={declared}; retained={retained}; "
-        f"duplicate={duplicate}; quarantined={quarantined}",
+        f"declared={declared}; retained={retained}; duplicate={duplicate}; "
+        f"proven={proven}; invalid={invalid}; quarantined={quarantined}",
+    )
+
+
+def _transform_events(
+    db: DuckDBPyConnection,
+    scope: str,
+    tables: tuple[str, ...],
+    columns: tuple[str, ...],
+    bindings: SemanticBindings,
+) -> AuditFinding:
+    blocked = 0
+    if "transform_events" in _optional_tables(db):
+        roles = {"device_imeis_slash" if role == "imei" else role for role in columns}
+        mapped = {
+            (binding.table_id, column)
+            for binding in bindings.accepted
+            if binding.kind == "role" and binding.value in roles and binding.table_id in tables
+            for column in binding.columns
+        }
+        # Source role mappings also cover blocked projections that have no field lineage yet.
+        for table_id, column_id in sorted(mapped):
+            blocked += db.execute(
+                "SELECT count(*) FROM meta.transform_events e JOIN staging.raw_rows r "
+                "ON r.record_id=e.record_id WHERE r.table_id=? AND e.column_id=? "
+                "AND e.status IN ('UNRESOLVED','CONFLICT')",
+                [table_id, column_id],
+            ).fetchone()[0]
+    return AuditFinding(
+        "transform_events", scope, "UNRESOLVED" if blocked else "PASS", f"blocked={blocked}"
     )
 
 
@@ -269,8 +421,9 @@ def audit_prepared(db: DuckDBPyConnection, bindings: SemanticBindings) -> AuditR
         columns = tuple(json.loads(columns_json))
         tables = tuple(json.loads(tables_json))
         findings.append(AuditFinding("applicability", scope, "PASS", "accepted grain binding"))
-        coverage = _coverage(db, tables)
+        coverage = _coverage(db, tables, bindings)
         findings.append(AuditFinding(coverage.check_id, scope, coverage.status, coverage.detail))
+        findings.append(_transform_events(db, scope, tables, columns, bindings))
         if blocked or not table_name or row_count == 0:
             findings.append(
                 AuditFinding(
