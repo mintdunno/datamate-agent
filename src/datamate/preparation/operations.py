@@ -77,6 +77,19 @@ class BatchResult:
     events: tuple[TransformEvent, ...]
 
 
+OPERATION_ORDER = {
+    "classify_structure": 0,
+    "fill_merged": 1,
+    "inherit_group": 2,
+    "deduplicate_order": 3,
+    "preserve_raw": 3,
+    "trim_text": 4,
+    "parse_values": 5,
+    "resolve_entities": 6,
+    "normalize_quantity": 7,
+}
+
+
 def validate_plan(plan: CleaningPlan, bindings: SemanticBindings) -> None:
     plan = CleaningPlan.model_validate(plan)
     if plan.bindings_digest != bindings.digest:
@@ -84,17 +97,7 @@ def validate_plan(plan: CleaningPlan, bindings: SemanticBindings) -> None:
     if sorted(plan.profile_digests) != sorted(bindings.profile_digests):
         raise ValueError("plan profile fingerprints are stale")
     accepted = {b.binding_id: b for b in bindings.accepted}
-    rank = {
-        "classify_structure": 0,
-        "fill_merged": 1,
-        "inherit_group": 2,
-        "deduplicate_order": 3,
-        "preserve_raw": 3,
-        "trim_text": 4,
-        "parse_values": 5,
-        "resolve_entities": 6,
-        "normalize_quantity": 7,
-    }
+    rank = OPERATION_ORDER
     previous = {}
     if len({step.step_id for step in plan.steps}) != len(plan.steps):
         raise ValueError("duplicate operation steps")

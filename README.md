@@ -53,8 +53,10 @@ opens questions, references, or .env. Its default version-2 registry path valida
 source-bound roles, applies registered operations, audits candidate facts and publishes
 only qualified projections. `--policy` accepts a version-2 `PreparationPolicy`;
 `--mode replay` requires a frozen plan through that policy. Unknown business semantics
-remain `PARTIAL`. Registry and replay make no model requests. Adaptive proposal
-components are tested separately; production adaptive orchestration remains pending.
+remain `PARTIAL`. Registry and replay make no model requests. The `prepare_with_recovery` Python API connects registry preparation to bounded
+Level-1 proposals and audited replay; the CLI remains explicitly registry/replay.
+Automatic issue selection for arbitrary businesses and real-pilot qualification
+remain pending.
 `--plans` selects the older explicit `TablePlan` path for reproduction and does not
 qualify an artifact for the restricted solving runtime.
 See [Stage 2 preparation](docs/engineering/stage2_data_preparation.md) for contracts,
@@ -120,6 +122,36 @@ available. Mixed text outside the reversible codec family, replacement character
 invalid SQLite TEXT bytes and uncertain candidates retain their evidence without
 a guessed repair. Formula expressions, paths, executable metadata and rule quotes
 are report-only. The legacy `--plans` path does not apply Unicode overlays.
+
+## Bounded adaptive preparation API
+
+`datamate.preparation.orchestration.prepare_with_recovery` first creates/reuses a
+registry artifact, then calls a trusted source-only issue selector. A selected
+issue receives only its authoritative table bindings and bounded source evidence.
+Live calls require `allow_model_calls=True`, an explicit model profile and a shared
+`RequestBudget`. The API rejects rates above 40 RPM; target 25 RPM and concurrency 1
+remain the development defaults. Registry/replay alone make no model requests.
+
+The model proposes a delta of registered operations. The orchestrator preserves the
+registry plan, merges new operations in the validator's prerequisite order and
+builds each trial in an isolated directory on the destination cache volume.
+Independent source verification and preservation of previously READY scopes are
+required before atomic promotion. Rejected/modified trials cannot replace the
+baseline. Deterministic replay artifacts may be reused; model answers are not cached.
+
+A source selector and verifier are required callables, not a universal learned
+cleaning policy. They must establish applicable rules, ambiguity/collision checks,
+repair effectiveness and preservation without evaluator labels. A no-issue result
+only describes that selector; it does not certify an entire business. PARTIAL
+retains safe baseline output. This API currently handles one selected issue per
+invocation; batch-level discovery/recovery and representative real-data qualification
+remain separate work.
+
+Each write-once run directory contains structured status, selected profile hash,
+proposal/recovery traces, baseline/selected fingerprints, timings and actual ledger
+accounting. Source files and existing caches stay unchanged. Model context limits,
+format repair, transport retries and campaign/phase limits use existing components.
+No generated Python, new framework or inference runtime is introduced.
 
 ## Offline normalization evaluation utilities
 
