@@ -32,7 +32,11 @@ def test_mock_agent_executes_sql_and_returns_valid_answer(tmp_path):
             ]
         )
 
-    tools = StructuredTools(path, {"tables": [{"table_id": "sales", "columns": []}], "rules": []})
+    tools = StructuredTools(
+        path,
+        {"tables": [{"table_id": "sales", "columns": []}], "rules": []},
+        allow_legacy_fixture=True,
+    )
     question = Question(id="q", business_id="shop", question="Tổng?", as_of_date="2025-01-01")
     result = asyncio.run(solve_question(question, tools, FunctionModel(respond)))
     assert result.answer["answer"] == 5
@@ -74,6 +78,7 @@ def test_explicit_rule_reads_satisfy_source_gate_and_queries_are_traced(tmp_path
             ],
             "rules": rules,
         },
+        allow_legacy_fixture=True,
     )
     calls = []
 
@@ -124,7 +129,11 @@ def test_ungrounded_scalar_is_abstained(tmp_path, sql, value):
             ]
         )
 
-    tools = StructuredTools(path, {"tables": [{"table_id": "sales", "columns": []}], "rules": []})
+    tools = StructuredTools(
+        path,
+        {"tables": [{"table_id": "sales", "columns": []}], "rules": []},
+        allow_legacy_fixture=True,
+    )
     question = Question(id="q", business_id="shop", question="Tổng?", as_of_date="2025-01-01")
     result = asyncio.run(solve_question(question, tools, FunctionModel(respond), max_requests=4))
     assert result.answer["type"] == "abstain"

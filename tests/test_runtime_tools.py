@@ -36,7 +36,7 @@ def test_sql_allows_analytical_cte_and_worker_caps(tmp_path):
         db.execute("CREATE TABLE sales(name VARCHAR,amount INTEGER)")
         db.execute("INSERT INTO sales VALUES ('A',10),('B',20),('C',30)")
     catalog = {"tables": [{"table_id": "sales", "columns": []}], "rules": []}
-    tools = StructuredTools(path, catalog, row_limit=2)
+    tools = StructuredTools(path, catalog, row_limit=2, allow_legacy_fixture=True)
     result = tools.execute_sql("WITH s AS (SELECT * FROM sales) SELECT * FROM s ORDER BY amount")
     assert result["rows"] == [["A", 10], ["B", 20]]
     assert result["truncated"] is True
@@ -62,7 +62,9 @@ def test_value_search_quotes_and_rule_paging(tmp_path):
         for n in range(4)
     ]
     tools = StructuredTools(
-        path, {"tables": [{"table_id": "sales", "columns": columns}], "rules": rules}
+        path,
+        {"tables": [{"table_id": "sales", "columns": columns}], "rules": rules},
+        allow_legacy_fixture=True,
     )
     assert tools.search_data("sales", "name", "O'Brien")["rows"][0] == ["O'Brien"]
     assert tools.search_data("sales", "name", "alpa", limit=1)["rows"] == [["alpha"]]
@@ -77,7 +79,10 @@ def test_worker_deadline_and_oversized_column_metadata(tmp_path):
     with duckdb.connect(str(path)) as db:
         db.execute("CREATE TABLE sales(n INTEGER)")
     tools = StructuredTools(
-        path, {"tables": [{"table_id": "sales", "columns": []}], "rules": []}, timeout=0.001
+        path,
+        {"tables": [{"table_id": "sales", "columns": []}], "rules": []},
+        timeout=0.001,
+        allow_legacy_fixture=True,
     )
     with pytest.raises(TimeoutError):
         tools.execute_sql("SELECT * FROM sales")
@@ -114,7 +119,7 @@ def test_scope_selection_delivers_business_rules_without_paging_split(tmp_path):
             {"rule_id": "business", "source": "data/shop/README.md", "text": "Business rules."},
         ],
     }
-    tools = StructuredTools(path, source)
+    tools = StructuredTools(path, source, allow_legacy_fixture=True)
     result = tools.get_rules(scope="business")
     assert [entry["rule_id"] for entry in result["entries"]] == ["business"]
     assert tools.rule_ids_read == {"business"}

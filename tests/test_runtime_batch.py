@@ -34,6 +34,7 @@ def setup(tmp_path, monkeypatch):
     prepared = SimpleNamespace(database=tmp_path / "db", catalog={"tables": []}, fingerprint="abc")
     monkeypatch.setattr(batch, "prepare_business", lambda *args, **kwargs: prepared)
     monkeypatch.setattr(batch, "StructuredTools", lambda *args, **kwargs: object())
+    monkeypatch.setattr(batch, "collect_metadata", lambda **kwargs: None)
 
     async def solve(q, tools, model, **kwargs):
         return SimpleNamespace(
@@ -156,3 +157,24 @@ def test_evidenced_normalization_plans_reach_preparation_and_bind_resume(setup, 
                 normalization_plans=PreparationPlans(businesses={}),
             )
         )
+
+
+def test_batch_prepares_v2_without_legacy_runtime_escape(setup, monkeypatch):
+    from datamate.preparation.v2 import PreparationPolicy
+
+    prepare = batch.prepare_business
+    observed = []
+
+    def qualified_prepare(*args, **kwargs):
+        observed.append(kwargs.get("policy"))
+        return prepare(*args, **kwargs)
+
+    def qualified_tools(*args, **kwargs):
+        assert not kwargs.get("allow_legacy_fixture", False)
+        return object()
+
+    monkeypatch.setattr(batch, "prepare_business", qualified_prepare)
+    monkeypatch.setattr(batch, "StructuredTools", qualified_tools)
+    result = asyncio.run(batch.run_batch([question("1")], **setup))
+    assert result["status"] == "completed"
+    assert len(observed) == 1 and isinstance(observed[0], PreparationPolicy)

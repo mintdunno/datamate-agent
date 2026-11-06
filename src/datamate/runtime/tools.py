@@ -3,6 +3,7 @@
 import json
 import multiprocessing as mp
 import time
+from copy import deepcopy
 from pathlib import Path
 from typing import Literal
 
@@ -10,6 +11,7 @@ import duckdb
 import sqlglot
 from rapidfuzz import fuzz
 from sqlglot import exp
+from sqlglot.optimizer.qualify import qualify
 from sqlglot.optimizer.scope import traverse_scope
 
 from datamate.contracts.answers import FiniteJsonValue
@@ -64,6 +66,10 @@ SAFE_FUNCTIONS = {
 }
 
 
+def _table_id(table: exp.Table) -> str:
+    return f"{table.db}.{table.name}" if table.db else table.name
+
+
 def validate_sql(sql: str, tables: set[str]) -> str:
     try:
         return _validated_select(sql, tables)
@@ -82,7 +88,12 @@ def _validated_select(sql: str, tables: set[str]) -> str:
         raise ValueError("only one SELECT query is permitted")
     query = statements[0]
     for table in query.find_all(exp.Table):
-        if not isinstance(table.this, exp.Identifier) or table.catalog or table.db:
+        if (
+            not isinstance(table.this, exp.Identifier)
+            or table.catalog
+            or (not table.db and "." in table.name)
+            or (table.db and (table.db != "clean" or _table_id(table) not in tables))
+        ):
             raise ValueError("external or qualified table access denied")
     # Resolve each scope: a same-named CTE can otherwise expose a physical private table.
     scopes = list(traverse_scope(query))
@@ -91,7 +102,7 @@ def _validated_select(sql: str, tables: set[str]) -> str:
         raise ValueError("unsupported table scope")
     for scope in scopes:
         for source in scope.sources.values():
-            if isinstance(source, exp.Table) and source.name not in tables:
+            if isinstance(source, exp.Table) and _table_id(source) not in tables:
                 raise ValueError("table outside current business")
     for node in query.walk():
         if isinstance(node, (exp.DDL, exp.DML, exp.Into, exp.Command)):
@@ -146,22 +157,232 @@ def _query_worker(connection, database: str, sql: str, row_limit: int, byte_limi
         connection.close()
 
 
+def _sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(char in "0123456789abcdef" for char in value)
+    )
+
+
 class StructuredTools:
     """Only artifact paths are supplied to workers; OS sandbox qualification is separate."""
 
     def __init__(
-        self, database: Path, catalog: dict, *, row_limit=40, byte_limit=12000, timeout=15
+        self,
+        database: Path,
+        catalog: dict,
+        *,
+        row_limit=40,
+        byte_limit=12000,
+        timeout=15,
+        allow_legacy_fixture: bool = False,
     ):
         self.database = database.resolve(strict=True)
-        self.catalog = catalog
+        self.catalog = deepcopy(catalog)
         self.row_limit, self.byte_limit, self.timeout = row_limit, byte_limit, timeout
-        self.tables = {table["table_id"] for table in catalog["tables"]} | {"calendar_data"}
+        self._qualified = self.catalog.get("artifact_version") == 2
+        if self._qualified:
+            self._relations = self._qualified_relations()
+            self.tables = set(self._relations)
+        elif allow_legacy_fixture and self.catalog.get("artifact_version") in (None, 1):
+            self.tables = {table["table_id"] for table in self.catalog["tables"]} | {
+                "calendar_data"
+            }
+        else:
+            raise ValueError("runtime requires qualified artifact version 2")
         self.executions = []
         self.rules_read = set()
         self.rule_ids_read = set()
 
+    def _qualified_relations(self) -> dict[str, dict]:
+        relations = {}
+        profiles = {table["table_id"]: table for table in self.catalog["tables"]}
+        try:
+            with duckdb.connect(
+                str(self.database), read_only=True, config={"enable_external_access": False}
+            ) as db:
+                for projection in self.catalog["projections"]:
+                    scope = projection["scope"]
+                    if self.catalog["qualification"].get(scope) != "READY":
+                        continue
+                    if (
+                        not isinstance(scope, str)
+                        or not scope.isascii()
+                        or not scope.isidentifier()
+                        or projection.get("table_name") != scope
+                    ):
+                        raise ValueError("invalid qualified scope")
+                    table = self._relation_description(db, projection)
+                    receipt = db.execute(
+                        "SELECT status FROM meta.qualification WHERE scope=?", [scope]
+                    ).fetchall()
+                    descriptors = db.execute(
+                        "SELECT table_name,columns_json,blocked_json,row_count,source_tables_json "
+                        "FROM meta.projection_descriptors WHERE scope=?",
+                        [scope],
+                    ).fetchall()
+                    if receipt != [("READY",)] or len(descriptors) != 1:
+                        raise ValueError("projection has no persisted READY receipt")
+                    candidate, columns, blocked, count, source_tables = descriptors[0]
+                    provenance = table["provenance_columns"]
+                    roles = [
+                        c["column_id"] for c in table["columns"] if c["column_id"] not in provenance
+                    ]
+                    sources = projection.get("source_tables", [])
+                    if (
+                        provenance != ["fact_id", "table_id"]
+                        or not roles
+                        or not sources
+                        or len(set(sources)) != len(sources)
+                        or any(source not in profiles for source in sources)
+                        or candidate != "candidate_" + scope
+                        or json.loads(columns) != roles
+                        or json.loads(blocked)
+                        or count != projection["row_count"]
+                        or sorted(json.loads(source_tables)) != sorted(sources)
+                    ):
+                        raise ValueError("qualified projection provenance or columns disagree")
+                    lineage_roles = {
+                        r[0]
+                        for r in db.execute(
+                            "SELECT DISTINCT role FROM meta.projection_lineage WHERE scope=?",
+                            [scope],
+                        ).fetchall()
+                    }
+                    if not set(roles) <= lineage_roles:
+                        raise ValueError("qualified projection is missing field lineage")
+                    source_descriptors = []
+                    for source in sources:
+                        profile = profiles[source]
+                        digest = profile.get("source_sha256", "")
+                        if (
+                            not profile.get("source")
+                            or not profile.get("source_table")
+                            or not _sha256(digest)
+                        ):
+                            raise ValueError("qualified projection has no source provenance")
+                        source_descriptors.append(
+                            {
+                                k: profile[k]
+                                for k in ("table_id", "source", "source_sha256", "source_table")
+                            }
+                        )
+                    table.update(
+                        scope=scope,
+                        source_tables=list(sources),
+                        sources=source_descriptors,
+                        policy={
+                            "qualification": "READY",
+                            "completeness": "complete_factual_scope",
+                            "measure_qualification": "UNRESOLVED",
+                            "temporal_declarations": self.catalog.get("calendar", {}).get(
+                                "declarations", {}
+                            ),
+                        },
+                    )
+                    if table["table_id"] in relations:
+                        raise ValueError("duplicate qualified relation")
+                    relations[table["table_id"]] = table
+                calendar = self.catalog.get("calendar", {})
+                if calendar.get("status") == "QUALIFIED":
+                    if (
+                        calendar.get("table_name") != "calendar_days"
+                        or calendar.get("provenance_columns") != ["record_id"]
+                        or not _sha256(calendar.get("source_sha256", ""))
+                        or not _sha256(calendar.get("calendar_sha256", ""))
+                    ):
+                        raise ValueError("qualified calendar provenance is incomplete")
+                    table = self._relation_description(db, calendar, calendar=True)
+                    table.update(
+                        scope="calendar",
+                        source="calendar.csv",
+                        source_sha256=calendar["source_sha256"],
+                        policy={
+                            "qualification": "QUALIFIED",
+                            "declarations": calendar.get("declarations", {}),
+                        },
+                    )
+                    if table["table_id"] in relations:
+                        raise ValueError("duplicate qualified calendar relation")
+                    relations[table["table_id"]] = table
+        except (KeyError, TypeError, duckdb.Error, json.JSONDecodeError) as error:
+            raise ValueError("invalid qualified artifact metadata") from error
+        return relations
+
+    @staticmethod
+    def _relation_description(db, projection: dict, *, calendar: bool = False) -> dict:
+        name = projection["table_name"]
+        columns = projection["columns"]
+        provenance = projection.get("provenance_columns", [])
+        count = projection["rows" if calendar else "row_count"]
+        if (
+            not isinstance(name, str)
+            or not name.isascii()
+            or not name.isidentifier()
+            or not isinstance(columns, (list, tuple))
+            or not columns
+            or any(not isinstance(column, str) or not column.isidentifier() for column in columns)
+            or len(set(columns)) != len(columns)
+            or not isinstance(provenance, (list, tuple))
+            or not provenance
+            or not set(provenance) <= set(columns)
+            or type(count) is not int
+            or count < 1
+        ):
+            raise ValueError("qualified relation declaration is incomplete")
+        physical = dict(
+            db.execute(
+                "SELECT column_name,data_type FROM information_schema.columns "
+                "WHERE table_schema='clean' AND table_name=? ORDER BY ordinal_position",
+                [name],
+            ).fetchall()
+        )
+        if not set(columns) <= physical.keys():
+            raise ValueError("qualified relation or declared columns are not prepared")
+        metadata = projection.get("column_metadata", {})
+        return {
+            "table_id": "clean." + name,
+            "rows": count,
+            "columns": [
+                {
+                    "column_id": column,
+                    "header": metadata.get(column, {}).get("header", column),
+                    "sql_type": physical[column],
+                }
+                for column in columns
+            ],
+            "provenance_columns": list(provenance),
+        }
+
+    def _qualified_sql(self, sql: str) -> str:
+        # Qualify against the catalog, not the physical schema: star expansion cannot
+        # reveal withheld fields, including through CTEs, subqueries or row aliases.
+        schema = {
+            "clean": {
+                name.split(".", 1)[1]: {c["column_id"]: c["sql_type"] for c in table["columns"]}
+                for name, table in self._relations.items()
+            }
+        }
+        try:
+            query = qualify(
+                sqlglot.parse_one(sql, read="duckdb"),
+                dialect="duckdb",
+                schema=schema,
+            )
+            if any(query.find_all(exp.TableColumn)):
+                raise ValueError("whole-row access outside qualified columns")
+            return query.sql(dialect="duckdb")
+        except sqlglot.errors.SqlglotError as error:
+            raise ValueError("column outside qualified projection") from error
+
     def list_tables(self) -> list[dict]:
-        """List business source tables and SQL IDs; the calendar table is calendar_data."""
+        """List qualified SQL relation IDs, complete factual scopes, and provenance."""
+        if self._qualified:
+            return [
+                {key: deepcopy(value) for key, value in table.items() if key != "columns"}
+                for table in self._relations.values()
+            ]
         return [
             {
                 "table_id": t["table_id"],
@@ -174,6 +395,10 @@ class StructuredTools:
 
     def describe_table(self, table_id: str) -> dict:
         """Get SQL column IDs, original headers, data types, and provenance for one table."""
+        if self._qualified:
+            if table_id not in self._relations:
+                raise ValueError("unknown qualified table")
+            return deepcopy(self._relations[table_id])
         for table in [*self.catalog["tables"], self.catalog.get("calendar", {})]:
             if table.get("table_id") == table_id:
                 return {
@@ -200,6 +425,8 @@ class StructuredTools:
         """Execute one read-only DuckDB SELECT using physical column IDs. Errors are explicit."""
         started = time.monotonic()
         validate_sql(sql, self.tables)
+        query = self._qualified_sql(sql) if self._qualified else sql
+        validate_sql(query, self.tables)
         parameters = parameters or []
         if len(parameters) > 100 or len(json.dumps(parameters, allow_nan=False).encode()) > 12000:
             raise ValueError("SQL parameter budget exceeded")
@@ -207,7 +434,7 @@ class StructuredTools:
         parent, child = context.Pipe(duplex=False)
         worker = context.Process(
             target=_query_worker,
-            args=(child, str(self.database), sql, self.row_limit, self.byte_limit, parameters),
+            args=(child, str(self.database), query, self.row_limit, self.byte_limit, parameters),
         )
         worker.start()
         child.close()
@@ -215,9 +442,9 @@ class StructuredTools:
             if not parent.poll(self.timeout):
                 raise TimeoutError("SQL deadline exceeded")
             result = parent.recv()
-            business_tables = self.tables - {"calendar_data"}
+            business_tables = self.tables - {"calendar_data", "clean.calendar_days"}
             uses_data = any(
-                isinstance(source, exp.Table) and source.name in business_tables
+                isinstance(source, exp.Table) and _table_id(source) in business_tables
                 for scope in traverse_scope(sqlglot.parse_one(sql, read="duckdb"))
                 for source in scope.sources.values()
             )
@@ -246,15 +473,19 @@ class StructuredTools:
         if column_id not in columns or not 1 <= limit <= self.row_limit:
             raise ValueError("invalid column or limit")
         return self.execute_sql(
-            f'SELECT DISTINCT "{column_id}" FROM "{table_id}" ORDER BY 1 LIMIT {limit}'
+            f'SELECT DISTINCT "{column_id}" FROM {self._quoted_table(table_id)} '
+            f"ORDER BY 1 LIMIT {limit}"
         )
 
     def search_schema(self, query: str) -> list[dict]:
         """Find relevant table/column labels by deterministic fuzzy matching; returns no rows."""
         candidates = []
-        for table in self.catalog["tables"]:
+        tables = self._relations.values() if self._qualified else self.catalog["tables"]
+        for table in tables:
             for column in table["columns"]:
-                label = str(column["source_header"]["value"])
+                label = str(
+                    column["header"] if self._qualified else column["source_header"]["value"]
+                )
                 score = fuzz.WRatio(query.casefold(), label.casefold())
                 candidates.append(
                     {
@@ -278,13 +509,17 @@ class StructuredTools:
         ):
             raise ValueError("invalid search column, limit, or query length")
         column = column_id.replace('"', '""')
-        table = table_id.replace('"', '""')
+        table = self._quoted_table(table_id)
         return self.execute_sql(
-            f'SELECT DISTINCT CAST("{column}" AS VARCHAR) AS value FROM "{table}" '
+            f'SELECT DISTINCT CAST("{column}" AS VARCHAR) AS value FROM {table} '
             f'WHERE "{column}" IS NOT NULL ORDER BY '
             f"levenshtein(lower(value), lower(?)), value LIMIT {limit}",
             [query],
         )
+
+    def _quoted_table(self, table_id: str) -> str:
+        parts = table_id.split(".") if self._qualified else [table_id]
+        return ".".join('"' + part.replace('"', '""') + '"' for part in parts)
 
     def get_rules(
         self,

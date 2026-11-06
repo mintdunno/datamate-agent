@@ -16,6 +16,7 @@ from datamate.inference.client import model_settings
 from datamate.observability import ModelUsage, QuestionFinished, QuestionStarted, ToolFinished
 from datamate.preparation.discovery import discover_business
 from datamate.preparation.pipeline import prepare_business
+from datamate.preparation.v2 import PreparationPolicy
 from datamate.runtime.inputs import PreparationPlans
 from datamate.runtime.metadata import collect_metadata
 from datamate.runtime.solver import INSTRUCTIONS, solve_question
@@ -322,6 +323,7 @@ async def run_batch(
                         question.business_id,
                         state_root,
                         split_id=split_id,
+                        policy=PreparationPolicy(),
                         plans=normalization_plans.businesses.get(question.business_id)
                         if normalization_plans
                         else None,
