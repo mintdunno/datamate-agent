@@ -1,7 +1,9 @@
 """Reviewed operations over immutable raw batches, with bounded native working state."""
 
+import hashlib
 import json
 import re
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time
@@ -39,6 +41,19 @@ _PARSE_ROLES = {
     "date": {"ordered_at", "payment_at"},
     "datetime": {"ordered_at", "payment_at"},
 }
+_GROUP_RULE = (
+    "| Ô để trống ở các dòng sau của cùng một nhóm dòng | giống ô đó ở dòng đầu nhóm: khách, "
+    "ghi chú, trạng thái của đơn áp cho mọi dòng của đơn. Không phải thiếu dữ liệu, "
+    "không có nghĩa là khách lẻ hay đơn hoàn thành |"
+)
+_DUPLICATE_RULE = (
+    "| Hai dòng của cùng một đơn giống nhau ở mọi ô | lỗi xuất file, tính một lần. "
+    "Hai dòng giống nhau của hai đơn khác nhau là hai lần bán, tính cả hai |"
+)
+
+
+def _rule_text(text: str) -> str:
+    return " ".join(unicodedata.normalize("NFKC", text).replace("*", "").casefold().split())
 
 
 @dataclass(frozen=True)
@@ -67,9 +82,22 @@ def validate_plan(plan: CleaningPlan, bindings: SemanticBindings) -> None:
     if sorted(plan.profile_digests) != sorted(bindings.profile_digests):
         raise ValueError("plan profile fingerprints are stale")
     accepted = {b.binding_id: b for b in bindings.accepted}
+    rank = {
+        "classify_structure": 0,
+        "fill_merged": 1,
+        "inherit_group": 2,
+        "deduplicate_order": 3,
+        "preserve_raw": 3,
+        "trim_text": 4,
+        "parse_values": 5,
+    }
+    previous = {}
     if len({step.step_id for step in plan.steps}) != len(plan.steps):
         raise ValueError("duplicate operation steps")
     for step in plan.steps:
+        if rank[step.operation.name] < previous.get(step.table_id, -1):
+            raise ValueError("operation prerequisites are out of order")
+        previous[step.table_id] = rank[step.operation.name]
         if step.table_id not in bindings.table_ids:
             raise ValueError("step references unknown table")
         referenced = []
@@ -84,6 +112,17 @@ def validate_plan(plan: CleaningPlan, bindings: SemanticBindings) -> None:
             }:
                 raise ValueError("operation column has no accepted source binding")
             witnesses = {e.model_dump_json() for b in referenced for e in b.evidence}
+            witnesses.update(
+                EvidenceRef(
+                    source=c.source_document.source,
+                    sha256=c.source_document.sha256,
+                    locator=f"clause:{c.clause_id}",
+                    line_start=c.line_start,
+                    line_end=c.line_end,
+                    quote_sha256=c.quote_sha256,
+                ).model_dump_json()
+                for c in bindings.clauses
+            )
             if not {e.model_dump_json() for e in step.evidence} <= witnesses:
                 raise ValueError("operation evidence does not belong to accepted bindings")
             if step.operation.name == "parse_values":
@@ -95,6 +134,56 @@ def validate_plan(plan: CleaningPlan, bindings: SemanticBindings) -> None:
                         for b in referenced
                     ):
                         raise ValueError("parse role is not justified by accepted column semantics")
+            if step.operation.name in {"inherit_group", "deduplicate_order"}:
+                if not any(
+                    b.kind == "role"
+                    and b.value == "order_id"
+                    and b.columns == (step.operation.group_key,)
+                    for b in referenced
+                ):
+                    raise ValueError("group operation requires an accepted order key")
+                expected = (
+                    _GROUP_RULE if step.operation.name == "inherit_group" else _DUPLICATE_RULE
+                )
+                applicable = [
+                    c
+                    for c in bindings.clauses
+                    if c.source_document.source == "rulebook.md"
+                    and _rule_text(c.quote) == _rule_text(expected)
+                ]
+                if not any(
+                    e.locator == f"clause:{c.clause_id}" for c in applicable for e in step.evidence
+                ):
+                    raise ValueError("active rulebook has no qualified group convention")
+                if step.operation.name == "deduplicate_order" and (
+                    not any(b.kind == "grain" and b.value == "order_line" for b in referenced)
+                    or any(
+                        b.kind == "grain" and b.value in {"payment_event", "inventory_snapshot"}
+                        for b in referenced
+                    )
+                ):
+                    raise ValueError(
+                        "raw duplicate exclusion requires unambiguous order-line grain"
+                    )
+                if step.operation.name == "inherit_group":
+                    permitted = {
+                        "order_id",
+                        "customer_id",
+                        "customer_name",
+                        "ordered_at",
+                        "order_total",
+                        "order_status",
+                        "payment_method",
+                        "note",
+                    }
+                    if any(
+                        not any(
+                            b.kind == "role" and b.value in permitted and col in b.columns
+                            for b in referenced
+                        )
+                        for col in step.operation.columns
+                    ):
+                        raise ValueError("cannot inherit line-level fields")
 
 
 class OperationState:
@@ -282,6 +371,7 @@ def _fill_merged(batch: Sequence[RawRecord], step: CleaningStep, state: Operatio
                         "horizontal merge has no field-preserving fill",
                     )
                 )
+
                 continue
             key = f"merge:{table.table_id}:{mincol}:{minrow}:{maxrow}"
             if record.source.number == minrow:
@@ -346,6 +436,156 @@ def _fill_merged(batch: Sequence[RawRecord], step: CleaningStep, state: Operatio
                 )
 
 
+def _inherit_group(batch: Sequence[RawRecord], step: CleaningStep, state: OperationState) -> None:
+    key = "group:" + step.step_id
+    stored = state.db.execute(
+        f'SELECT payload FROM "{state.table_name}" WHERE key=?', [key]
+    ).fetchone()
+    carry = json.loads(stored[0]) if stored else None
+    for record in batch:
+        if state.dispositions[record.record_id].kind != "retained":
+            carry = None
+            continue
+        cells = state.cells[record.record_id]
+        group = cells.get(step.operation.group_key)
+        if group is not None and group != "":
+            if carry is None or encoded(group) != carry["group"]:
+                carry = {
+                    "group": encoded(group),
+                    "origin": record.record_id,
+                    "first": {c: encoded(cells.get(c)) for c in step.operation.columns},
+                    "conflicts": [],
+                }
+        elif carry:
+            cells[step.operation.group_key] = _decoded(carry["group"])
+            state.extra_lineage.append(
+                LineageEdge(
+                    "row:" + record.record_id,
+                    carry["origin"],
+                    step.operation.group_key,
+                    step.step_id,
+                )
+            )
+        if carry is None:
+            state.events.append(
+                TransformEvent(
+                    record.record_id,
+                    step.operation.group_key,
+                    step.step_id,
+                    "UNRESOLVED",
+                    group,
+                    group,
+                    "missing first group key",
+                )
+            )
+            continue
+        for column in step.operation.columns:
+            before = cells.get(column)
+            first = _decoded(carry["first"][column])
+            if before is None or before == "":
+                if first is not None and first != "" and column not in carry["conflicts"]:
+                    cells[column] = first
+                    state.extra_lineage.append(
+                        LineageEdge(
+                            "row:" + record.record_id, carry["origin"], column, step.step_id
+                        )
+                    )
+                    state.events.append(
+                        TransformEvent(
+                            record.record_id,
+                            column,
+                            step.step_id,
+                            "APPLIED",
+                            before,
+                            first,
+                            "first group value",
+                        )
+                    )
+                else:
+                    state.events.append(
+                        TransformEvent(
+                            record.record_id,
+                            column,
+                            step.step_id,
+                            "UNRESOLVED",
+                            before,
+                            before,
+                            "first group value unavailable or conflicting",
+                        )
+                    )
+            elif first is not None and first != "" and encoded(before) != encoded(first):
+                if column not in carry["conflicts"]:
+                    carry["conflicts"].append(column)
+                state.events.append(
+                    TransformEvent(
+                        record.record_id,
+                        column,
+                        step.step_id,
+                        "UNRESOLVED",
+                        before,
+                        before,
+                        "group value conflict",
+                    )
+                )
+    state.db.execute(f'DELETE FROM "{state.table_name}" WHERE key=?', [key])
+    if carry is not None:
+        state.db.execute(f'INSERT INTO "{state.table_name}" VALUES (?,?)', [key, json.dumps(carry)])
+
+
+def _deduplicate_order(
+    batch: Sequence[RawRecord], step: CleaningStep, state: OperationState
+) -> None:
+    for record in batch:
+        if state.dispositions[record.record_id].kind != "retained":
+            continue
+        group = state.cells[record.record_id].get(step.operation.group_key)
+        if group is None or group == "":
+            state.events.append(
+                TransformEvent(
+                    record.record_id,
+                    step.operation.group_key,
+                    step.step_id,
+                    "UNRESOLVED",
+                    group,
+                    group,
+                    "duplicate scope lacks order key",
+                )
+            )
+            continue
+        signature = json.dumps(
+            [
+                encoded(group),
+                [encoded(v) for v in record.source.values],
+                record.source.formulas,
+                record.source.formats,
+            ],
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        key = "seen:" + step.table_id + ":" + hashlib.sha256(signature.encode()).hexdigest()
+        old = state.db.execute(
+            f'SELECT payload FROM "{state.table_name}" WHERE key=?', [key]
+        ).fetchone()
+        if old:
+            original = json.loads(old[0])["record_id"]
+            state.dispositions[record.record_id] = RawDisposition(
+                record.record_id,
+                "duplicate",
+                "exact same-order source duplicate",
+                step.evidence,
+                original,
+            )
+            state.extra_lineage.extend(
+                LineageEdge("row:" + original, record.record_id, column, step.step_id)
+                for column in state.cells[record.record_id]
+            )
+        else:
+            state.db.execute(
+                f'INSERT INTO "{state.table_name}" VALUES (?,?)',
+                [key, json.dumps({"record_id": record.record_id})],
+            )
+
+
 def _source_date_context(state: OperationState, table_id: str) -> tuple[dict, datetime | None]:
     exists = state.db.execute(
         "SELECT 1 FROM duckdb_tables() WHERE schema_name='meta' AND table_name='source_tables'"
@@ -398,6 +638,10 @@ def execute_batch(
             )
     elif step.operation.name == "fill_merged":
         _fill_merged(batch, step, state)
+    elif step.operation.name == "inherit_group":
+        _inherit_group(batch, step, state)
+    elif step.operation.name == "deduplicate_order":
+        _deduplicate_order(batch, step, state)
     elif step.operation.name == "trim_text":
         for column in step.operation.columns:
             records = [r for r in batch if state.dispositions[r.record_id].kind == "retained"]
@@ -491,9 +735,13 @@ def execute_batch(
                 LineageEdge(fact_id, record.record_id, column, identifier)
                 for identifier in dict.fromkeys(state.origins[record.record_id, column])
             )
+    eliminated = {"row:" + d.record_id for d in state.dispositions.values() if d.kind != "retained"}
+    edges = tuple(
+        dict.fromkeys([*lineage, *(e for e in state.extra_lineage if e.fact_id not in eliminated)])
+    )
     return BatchResult(
         tuple(facts),
         tuple(state.dispositions[r.record_id] for r in batch),
-        tuple([*lineage, *state.extra_lineage]),
+        edges,
         tuple(state.events),
     )

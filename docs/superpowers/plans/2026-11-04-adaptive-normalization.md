@@ -11,7 +11,7 @@
 **Spec:** docs/superpowers/specs/2026-11-04-adaptive-normalization-design.md, revision 3, updated for the user's Polars-only decision on 2026-11-05, retaining revision 2's approved simplification. Read both documents. Source authority remains the active split's rulebook/README/calendar and official competition rules; uncorrected v3 examples do not override them.
 
 **Status:** Revision 3 retains Polars and removes planned Pandas usage; product
-implementation started on 2026-11-05. Tasks 1–3, 5–10 and 18 are complete; remaining tasks continue on the feature branch. The 24-task structure and existing execution method
+implementation started on 2026-11-05. Tasks 1–3, 5–11 and 18 are complete; remaining tasks continue on the feature branch. The 24-task structure and existing execution method
 are retained. The revision record below distinguishes spec changes from implementation choices.
 
 ## Global Constraints
@@ -416,8 +416,8 @@ assert raw_record_count_after == raw_record_count_before
 **Files:** Modify src/datamate/preparation/normalization.py, src/datamate/preparation/operations.py, src/datamate/preparation/storage.py; extend tests/test_normalization.py and tests/test_cleaning_operations.py.
 **Interfaces:** OperationState carries group boundary/first values and a DuckDB-backed seen-key store. Existing normalize_rows remains a compatibility wrapper over reviewed behavior; no global same-name/order-ID dedup.
 
-- [ ] Write test_fill_and_dedup_are_invariant_for_batches_1_7_1000 and test_footer_or_file_boundary_resets_group. Assert identical facts/dispositions, first-group-value semantics, no fill across structural/file boundaries or uncached keys, and raw values retained.
-- [ ] Add test_same_order_exact_duplicate_only: near duplicates, different orders and non-order identical ledger rows stay; equality includes relevant tagged source values/formulas, with rule/evidence scope recorded.
+- [x] Write test_fill_and_dedup_are_invariant_for_batches_1_7_1000 and test_footer_or_file_boundary_resets_group. Assert identical facts/dispositions, first-group-value semantics, no fill across structural/file boundaries or uncached keys, and raw values retained.
+- [x] Add test_same_order_exact_duplicate_only: near duplicates, different orders and non-order identical ledger rows stay; equality includes relevant tagged source values/formulas, with rule/evidence scope recorded.
 
 ```python
 assert outputs_for_batch_1 == outputs_for_batch_7 == outputs_for_batch_1000
@@ -427,10 +427,10 @@ assert retained_source_ids >= {near_duplicate_id, other_order_id, ledger_copy_id
 assert disposition_count == raw_record_count
 ```
 
-- [ ] Run uv run --locked pytest tests/test_normalization.py tests/test_cleaning_operations.py -q; expect missing spill/boundary behavior.
-- [ ] Reuse safe existing inheritance/signature logic, move large seen state into DuckDB and verify group-key conflict/cardinality. Monthly-source union does not imply cross-file fill; cross-source same-order dedup needs an explicit identity/scope declaration.
-- [ ] Assert full raw disposition counts with duplicate_of links and deterministic conflict events.
-- [ ] Commit: feat(normalization): enforce bounded group and duplicate scope across batches.
+- [x] Run uv run --locked pytest tests/test_normalization.py tests/test_cleaning_operations.py -q; expect missing spill/boundary behavior.
+- [x] Reuse safe existing inheritance/signature logic, move large seen state into DuckDB and verify group-key conflict/cardinality. Monthly-source union does not imply cross-file fill; cross-source same-order dedup needs an explicit identity/scope declaration.
+- [x] Assert full raw disposition counts with duplicate_of links and deterministic conflict events.
+- [x] Commit: feat(normalization): enforce bounded group and duplicate scope across batches.
 
 ### Task 12: Evidence-accepted entity and alias links (P3)
 

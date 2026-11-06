@@ -77,7 +77,7 @@ def test_single_raw_record_supports_two_facts_one_disposition(tmp_path):
         assert db.execute("SELECT count(*) FROM meta.facts").fetchone()[0] == 2
         assert db.execute("SELECT count(*) FROM meta.lineage").fetchone()[0] == 2
         with pytest.raises(duckdb.ConstraintException):
-            module.store_disposition(db, models.RawDisposition(row.record_id, "duplicate", "bad"))
+            module.store_disposition(db, models.RawDisposition(row.record_id, "quarantined", "bad"))
 
 
 def test_changed_source_digest_changes_record_identity(tmp_path):

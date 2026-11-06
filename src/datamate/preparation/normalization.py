@@ -83,6 +83,19 @@ class FillMergedOperation(ContractModel):
     columns: tuple[NonblankString, ...] = Field(min_length=1)
 
 
+class InheritGroupOperation(ContractModel):
+    name: Literal["inherit_group"] = "inherit_group"
+    version: Literal["1"] = "1"
+    group_key: NonblankString
+    columns: tuple[NonblankString, ...] = Field(min_length=1)
+
+
+class DeduplicateOrderOperation(ContractModel):
+    name: Literal["deduplicate_order"] = "deduplicate_order"
+    version: Literal["1"] = "1"
+    group_key: NonblankString
+
+
 class CleaningStep(ContractModel):
     table_id: NonblankString
     operation: Annotated[
@@ -90,7 +103,9 @@ class CleaningStep(ContractModel):
         | TrimTextOperation
         | ParseValuesOperation
         | ClassifyStructureOperation
-        | FillMergedOperation,
+        | FillMergedOperation
+        | InheritGroupOperation
+        | DeduplicateOrderOperation,
         Field(discriminator="name"),
     ]
     binding_ids: tuple[Sha256, ...] = ()

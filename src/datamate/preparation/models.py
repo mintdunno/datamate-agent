@@ -205,6 +205,7 @@ class RawDisposition:
     kind: Literal["retained", "structural", "duplicate", "quarantined", "unsupported"]
     reason: str
     evidence_refs: tuple[EvidenceRef, ...] = ()
+    duplicate_of: str | None = None
 
 
 @dataclass(frozen=True)

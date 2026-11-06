@@ -70,7 +70,7 @@ def create_storage(db: DuckDBPyConnection) -> None:
     db.execute("""CREATE TABLE meta.dispositions(
         record_id VARCHAR PRIMARY KEY, kind VARCHAR NOT NULL
         CHECK(kind IN ('retained','structural','duplicate','quarantined','unsupported')),
-        reason VARCHAR NOT NULL, evidence_json JSON NOT NULL)""")
+        reason VARCHAR NOT NULL, evidence_json JSON NOT NULL,duplicate_of VARCHAR)""")
     # Candidate payloads are build metadata, never query-ready clean factual storage.
     # Task14 materializes typed canonical tables before any qualified publication.
     db.execute("""CREATE TABLE meta.facts(
@@ -233,12 +233,36 @@ def iter_raw_batches(
 
 
 def store_disposition(db: DuckDBPyConnection, disposition: RawDisposition) -> None:
-    if not db.execute(
-        "SELECT 1 FROM staging.raw_rows WHERE record_id=?", [disposition.record_id]
-    ).fetchone():
+    source = db.execute(
+        "SELECT table_id FROM staging.raw_rows WHERE record_id=?", [disposition.record_id]
+    ).fetchone()
+    if not source:
         raise ValueError("disposition references unknown raw record")
+    if disposition.kind == "duplicate":
+        original = db.execute(
+            "SELECT table_id FROM staging.raw_rows WHERE record_id=?", [disposition.duplicate_of]
+        ).fetchone()
+        if not original or original != source or disposition.duplicate_of == disposition.record_id:
+            raise ValueError(
+                "duplicate link must reference a different raw record in the same source table"
+            )
+        db.execute("ALTER TABLE meta.dispositions ADD COLUMN IF NOT EXISTS duplicate_of VARCHAR")
+        db.execute(
+            "INSERT INTO meta.dispositions(record_id,kind,reason,evidence_json,duplicate_of) "
+            "VALUES (?,?,?,?,?)",
+            [
+                disposition.record_id,
+                disposition.kind,
+                disposition.reason,
+                _json([e.model_dump(mode="json") for e in disposition.evidence_refs]),
+                disposition.duplicate_of,
+            ],
+        )
+        return
+    if disposition.duplicate_of is not None:
+        raise ValueError("only duplicate dispositions carry duplicate links")
     db.execute(
-        "INSERT INTO meta.dispositions VALUES (?,?,?,?)",
+        "INSERT INTO meta.dispositions(record_id,kind,reason,evidence_json) VALUES (?,?,?,?)",
         [
             disposition.record_id,
             disposition.kind,
