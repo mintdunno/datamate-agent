@@ -208,10 +208,12 @@ class ArtifactObservationTarget(ContractModel):
 
     version: Literal["artifact-observation-v1"] = ARTIFACT_OBSERVATION_VERSION
     stage: AssertionStage
-    scope: Literal["source_cell", "calendar_days", "relationship"]
-    fields: tuple[Literal["value", "date", "holiday", "product_id", "matched_record_id"], ...]
+    scope: Literal["source_cell", "calendar_days", "relationship", "disposition", "attribute"]
+    fields: tuple[
+        Literal["value", "date", "holiday", "product_id", "matched_record_id", "kind", "size"], ...
+    ]
     cardinality: Literal["one"] = "one"
-    value_type: Literal["date", "datetime", "int"] | None = None
+    value_type: Literal["date", "datetime", "int", "str"] | None = None
 
     @model_validator(mode="after")
     def fixed_target(self) -> Self:
@@ -219,6 +221,16 @@ class ArtifactObservationTarget(ContractModel):
             valid = self.fields == ("value",) and (
                 (self.stage == "raw" and self.value_type is None)
                 or (self.stage in {"parsed_cell", "canonical_fact"} and self.value_type is not None)
+            )
+        elif self.scope == "disposition":
+            valid = (
+                self.stage == "disposition" and self.fields == ("kind",) and self.value_type is None
+            )
+        elif self.scope == "attribute":
+            valid = (
+                self.stage == "canonical_fact"
+                and self.fields == ("size",)
+                and self.value_type == "str"
             )
         elif self.scope == "calendar_days":
             valid = (
@@ -742,14 +754,36 @@ class SourceProofReader:
             cell = read_source_observation(self.db, self.sources, evidence)
             record_id = evidence.locator[4:].split("/", 1)[0]
             row = self.db.execute(
-                "SELECT r.kind,r.source_row,t.header_row FROM staging.raw_rows r "
+                "SELECT r.kind,r.source_row,t.header_row,t.table_name,t.headers_json,r.values_json "
+                "FROM staging.raw_rows r "
                 "JOIN meta.source_tables t ON t.table_id=r.table_id "
                 "WHERE r.record_id=? AND t.source=? AND t.source_sha256=?",
                 [record_id, evidence.source, evidence.sha256],
             ).fetchone()
             if row is None:
                 raise ValueError("source row metadata missing")
-            return {"cell": cell, "record_kind": row[0], "source_row": row[1], "header_row": row[2]}
+            headers, values = json.loads(row[4]), json.loads(row[5])
+            units, base_quantities = set(), set()
+            for header, value in zip(headers, values, strict=True):
+                name = str(header.get("value", "")).casefold()
+                if (
+                    name in {"đvt", "đ.vị", "đơn vị", "đơn vị tính", "unit"}
+                    and value.get("type") == "str"
+                    and value.get("value")
+                ):
+                    units.add(value["value"])
+                if name in {"số lượng quy đổi", "base_quantity"} and value.get("type") == "int":
+                    base_quantities.add(value["value"])
+            return {
+                "cell": cell,
+                "unit": next(iter(units)) if len(units) == 1 else None,
+                "base_quantity": next(iter(base_quantities)) if len(base_quantities) == 1 else None,
+                "record_kind": row[0],
+                "source_row": row[1],
+                "header_row": row[2],
+                "table_name": row[3],
+                "header": json.loads(row[4])[int(evidence.locator.rsplit("/c", 1)[1]) - 1]["value"],
+            }
         if evidence.line_start is None or evidence.line_end is None:
             raise ValueError("document evidence needs an exact line span")
         span = f"{evidence.line_start}-{evidence.line_end}"

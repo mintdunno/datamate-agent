@@ -6,6 +6,7 @@ import json
 import re
 from collections.abc import Callable, Sequence
 from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -240,6 +241,8 @@ def _valid_scalar(value: object, kind: str) -> bool:
     if not isinstance(payload, str):
         return False
     try:
+        if kind == "str":
+            return True
         if kind == "date":
             return date.fromisoformat(payload).isoformat() == payload
         if kind == "datetime":
@@ -344,6 +347,10 @@ def _observe(db, relations, case, target):
     if len(dispositions) > 1:
         return "ABSTAINED", None
     disposition = dispositions[0][0] if dispositions else None
+    if target is not None and target.scope == "disposition":
+        return (
+            ("COMMITTED", {"kind": disposition}) if disposition is not None else ("ABSTAINED", None)
+        )
     if disposition == "quarantined":
         return "QUARANTINED", None
     if target is None or target.scope == "relationship" or row_kind != "data":
@@ -375,7 +382,26 @@ def _observe(db, relations, case, target):
     if len(facts) != 1 or facts[0][0] != "row:" + case.record_id:
         return "ABSTAINED", None
     payload = json.loads(facts[0][1])
-    value = payload.get(case.column_id) if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        return "ABSTAINED", None
+    if target.scope == "attribute":
+        if payload.get(case.column_id) != values[columns.index(case.column_id)]:
+            return "ABSTAINED", None
+        value = payload.get("size")
+    else:
+        value = payload.get(case.column_id)
+    if target.value_type == "int" and isinstance(value, dict) and value.get("type") == "Decimal":
+        try:
+            numeric = Decimal(value["value"])
+            value = (
+                {"type": "int", "value": str(int(numeric))}
+                if numeric.is_finite()
+                and numeric == numeric.to_integral_value()
+                and numeric.adjusted() < 38
+                else None
+            )
+        except (InvalidOperation, ValueError, TypeError):
+            value = None
     return ("COMMITTED", value) if _valid_scalar(value, target.value_type) else ("ABSTAINED", None)
 
 

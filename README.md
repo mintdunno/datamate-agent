@@ -141,6 +141,26 @@ original serialization and digests. Migration is explicit, rechecks original sou
 proofs and produces a new version; missing artifact support abstains while retaining
 verified denominators. No reference-coverage minimum is relaxed by migration.
 
+Evaluator source assertions now have fixed targets for structural dispositions,
+typed string/quantity preservation, integer amounts, month-scoped dates and derived
+size attributes. `datamate.evaluation.source_assertions.revise_development_suite`
+rechecks source witnesses before producing a new reference version; it accepts
+only development cases and preserves the checkpoint. Unsupported source claims
+stay unresolved. A single ambiguous comma amount needs a native integer price,
+quantity and connected exact order/product keys; arbitrary agreement is insufficient.
+Header proofs require declarations or a declared-file/header-vector/data witness.
+
+Artifact observation never performs the candidate's missing transformation. A size
+assertion requires an actual separate `size` field and preserved product identity;
+missing fields abstain. Integral typed Decimal values serialize as integers without
+rounding, while fractional values fail an integer assertion. Header classification
+reads the candidate's disposition, rather than inferring success from raw metadata.
+References and target addresses remain evaluator-only. Real adjudications stay in
+ignored state, not source control. When reference assertions change, freeze a new
+suite and compare both baseline and final against that same version; old metrics
+cannot be carried over. The offline `normalization-eval report --suite ...` command
+accepts the explicitly selected new reference file.
+
 ## Solving and bounded evaluation
 
 Create evaluator-owned fixed suites once; never pass answers or the evaluator manifest
