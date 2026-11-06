@@ -227,8 +227,14 @@ def _report(args):
 def main(argv=None):
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] == "normalization-eval":
+        from datamate.evaluation.normalization_cli import main as normalization_main
+
+        return normalization_main(arguments[1:])
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("normalization-eval", help="Offline normalization evaluator utilities")
     serve = commands.add_parser(
         "serve", help="Plan local inference; launch/download are explicit opt-ins"
     )

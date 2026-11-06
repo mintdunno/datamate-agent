@@ -49,10 +49,14 @@ uv run --locked python -m datamate.preparation --split-root datasets/train --spl
 ~~~
 
 The CLI processes all records for that business and prints metadata only. It never
-opens questions, references, or .env. For explicit normalization, provide --plans
-with table-key -> TablePlan JSON and current source-evidence fingerprints.
-The solving CLI accepts --plans with a businesses -> table-key -> TablePlan bundle;
-the same evidenced policies and their fingerprints apply to every compared model.
+opens questions, references, or .env. Its default version-2 registry path validates
+source-bound roles, applies registered operations, audits candidate facts and publishes
+only qualified projections. `--policy` accepts a version-2 `PreparationPolicy`;
+`--mode replay` requires a frozen plan through that policy. Unknown business semantics
+remain `PARTIAL`. Registry and replay make no model requests. Adaptive proposal
+components are tested separately; production adaptive orchestration remains pending.
+`--plans` selects the older explicit `TablePlan` path for reproduction and does not
+qualify an artifact for the restricted solving runtime.
 See [Stage 2 preparation](docs/engineering/stage2_data_preparation.md) for contracts,
 provenance queries, cache behavior, and limitations.
 
@@ -64,6 +68,26 @@ It accepts frozen `expected_sources` hashes and never loads QA labels or a model
 Its `RAW_PROFILE_ONLY_UNQUALIFIED` manifest is a diagnostic, not a query-ready
 normalization artifact. Failed workers keep resource diagnostics and no success
 manifest. Existing preparation CLI behavior remains available during integration.
+
+## Offline normalization evaluation utilities
+
+```bash
+uv run --locked python -m datamate normalization-eval --help
+uv run --locked python -m datamate normalization-eval report --manifest state/suites/normalization-v1/cases-v1.json --suite state/suites/normalization-v1/references-v1.json --policy config/normalization/pilot.json --offline
+```
+
+Use the actual frozen policy path for your campaign. `select`, `references`, `freeze`
+and `report` call shared evaluator APIs without loading inference or provider modules.
+Outputs are write-once and must remain outside source/dataset directories. Reports
+show development aggregates and withhold checkpoint labels and diagnostics. These
+utilities do not yet expose baseline/verification execution as CLI actions.
+
+Prepared-artifact evaluation uses the private `artifact-observation-v1` contract.
+It reads fixed source coordinates after preparation; assertion targets and expected
+values never enter the preparation callback. Legacy reference files retain their
+original serialization and digests. Migration is explicit, rechecks original source
+proofs and produces a new version; missing artifact support abstains while retaining
+verified denominators. No reference-coverage minimum is relaxed by migration.
 
 ## Solving and bounded evaluation
 
