@@ -157,7 +157,9 @@ class CleaningPlan(ContractModel):
     version: Literal["cleaning-v1"] = "cleaning-v1"
     bindings_digest: Sha256
     profile_digests: tuple[Sha256, ...]
-    steps: tuple[CleaningStep, ...] = Field(min_length=1, max_length=64)
+    # A deterministic business plan spans many source tables; model output stays
+    # independently bounded by the selected inference profile's token budget.
+    steps: tuple[CleaningStep, ...] = Field(min_length=1, max_length=256)
     rollback: Literal["reject_candidate"] = "reject_candidate"
 
 

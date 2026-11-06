@@ -16,6 +16,7 @@ from pathlib import Path
 import duckdb
 
 from datamate.preparation.catalog import compile_clauses, rule_entries
+from datamate.preparation.diagnostics import diagnose_preparation as diagnose_preparation
 from datamate.preparation.discovery import discover_business, sha256_file
 from datamate.preparation.loaders import load_tables
 from datamate.preparation.models import (
@@ -34,8 +35,18 @@ from datamate.preparation.resources import (
     run_bounded_preparation,
 )
 from datamate.preparation.storage import create_storage, stage_table, store_clauses
+from datamate.preparation.v2 import PreparationPolicy
+from datamate.preparation.v2 import build_candidate as build_candidate
 
 PIPELINE_VERSION = "stage2-v1"
+
+
+def _v2_implementation() -> dict[str, str]:
+    """Include shared runtime contracts, not only the preparation package."""
+    package = Path(__file__).parent.parent
+    return {
+        p.relative_to(package).as_posix(): sha256_file(p) for p in sorted(package.rglob("*.py"))
+    }
 
 
 def _json(value: object) -> str:
@@ -386,8 +397,15 @@ def prepare_business(
     *,
     split_id: str,
     plans: dict[str, TablePlan] | None = None,
+    policy: PreparationPolicy | None = None,
 ) -> PreparedBusiness:
     """Consume all allowed records; atomically publish only a complete, source-stable cache."""
+    if policy is not None:
+        from datamate.preparation.v2 import prepare_v2
+
+        if plans:
+            raise ValueError("legacy TablePlans cannot qualify version 2 artifacts")
+        return prepare_v2(split_root, business_id, cache_root, split_id=split_id, policy=policy)
     inputs = discover_business(split_root, business_id, split_id=split_id)
     output = cache_root.resolve()
     if output.is_relative_to(inputs.split_root):
