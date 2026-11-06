@@ -26,10 +26,13 @@ from datamate.preparation.models import (
     EvidenceRef,
     NormalizationIssue,
     ResolvedBinding,
+    RuleClause,
     SemanticBindings,
+    SourceDocument,
     SourceFile,
 )
 from datamate.preparation.normalization import CleaningPlan, CleaningStep
+from datamate.preparation.operations import validate_plan
 
 
 def source_packet(
@@ -511,10 +514,8 @@ def test_raw_expected_label_json_cannot_enter_solver_packet(tmp_path):
         )
 
 
-def test_typed_plan_factory_uses_selected_profile_and_one_request(tmp_path):
-    bindings = SemanticBindings((), (), ("b" * 64,), ("table",))
-    issue, packet, _, _ = source_packet(tmp_path, bindings_digest=bindings.digest)
-    selected_profile = ModelProfile(
+def adaptive_profile():
+    return ModelProfile(
         name="candidate",
         model_id="selected-model",
         base_url="http://localhost:8000/v1",
@@ -522,94 +523,268 @@ def test_typed_plan_factory_uses_selected_profile_and_one_request(tmp_path):
         input_byte_limit=24000,
         max_tokens=2048,
     )
-    budget = RequestBudget(tmp_path / "factory.sqlite", run_id="factory")
+
+
+def prompt_bindings(*, value="product_id"):
+    proof = EvidenceRef(source="data/shop/x.csv", sha256="c" * 64, locator="header:table/x")
+    binding = Binding(
+        kind="role",
+        table_id="table",
+        columns=("sku",),
+        value=value,
+        profile_digest="b" * 64,
+        evidence=(proof,),
+    )
+    unresolved = binding.model_copy(update={"value": "unresolved-private-value"})
+    document = SourceDocument(
+        "train",
+        "rulebook.md",
+        sha256(b"Do not serialize full source.\n").hexdigest(),
+        "Do not serialize full source.\n",
+    )
+    clause = RuleClause(
+        "clause-private",
+        document,
+        1,
+        1,
+        document.text,
+        document.sha256,
+        None,
+        "general",
+        None,
+        "UNMAPPED",
+    )
+    return SemanticBindings(
+        (
+            ResolvedBinding(binding, "ACCEPTED", "reason-private"),
+            ResolvedBinding(unresolved, "UNRESOLVED", "reason-private"),
+        ),
+        (clause,),
+        ("b" * 64,),
+        ("table",),
+        profile_sources=(("table", "b" * 64, "data/shop/x.csv", "c" * 64),),
+    )
+
+
+def typed_response(body, candidate):
+    return httpx.Response(
+        200,
+        json={
+            "id": "typed-result",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "selected-model",
+            "choices": [
+                {
+                    "index": 0,
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call-1",
+                                "type": "function",
+                                "function": {
+                                    "name": body["tools"][0]["function"]["name"],
+                                    "arguments": json.dumps(candidate),
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+        },
+    )
+
+
+def test_typed_plan_factory_supplies_accepted_context_for_a_valid_plan(tmp_path):
+    bindings = prompt_bindings()
+    recovery_policy = policy(tmp_path, bindings)
+    issue, packet, _, _ = source_packet(tmp_path, bindings_digest=bindings.digest)
     requests = []
 
     def respond(request):
         body = json.loads(request.content)
         requests.append(body)
-        tool_name = body["tools"][0]["function"]["name"]
-        return httpx.Response(
-            200,
-            json={
-                "id": "typed-result",
-                "object": "chat.completion",
-                "created": 0,
-                "model": "selected-model",
-                "choices": [
-                    {
-                        "index": 0,
-                        "finish_reason": "tool_calls",
-                        "message": {
-                            "role": "assistant",
-                            "content": None,
-                            "tool_calls": [
-                                {
-                                    "id": "call-1",
-                                    "type": "function",
-                                    "function": {
-                                        "name": tool_name,
-                                        "arguments": plan(bindings).model_dump_json(),
-                                    },
-                                }
-                            ],
-                        },
-                    }
-                ],
-                "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
-            },
+        prompt = body["messages"][0]["content"]
+        context = json.loads(prompt.split("\n", 1)[1])
+        accepted = context["accepted_bindings"]
+        assert accepted == [
+            {
+                "binding_id": bindings.accepted[0].binding_id,
+                "table_id": "table",
+                "columns": ["sku"],
+                "kind": "role",
+                "value": "product_id",
+                "profile_digest": "b" * 64,
+                "evidence": [bindings.accepted[0].evidence[0].model_dump(mode="json")],
+            }
+        ]
+        assert context["table_ids"] == ["table"]
+        assert context["profile_digests"] == ["b" * 64]
+        assert context["profiles"] == [
+            {
+                "table_id": "table",
+                "profile_digest": "b" * 64,
+                "source": "data/shop/x.csv",
+                "source_sha256": "c" * 64,
+            }
+        ]
+        assert all(
+            token not in prompt
+            for token in (
+                "reason-private",
+                "unresolved-private-value",
+                "Do not serialize full source.",
+                "source_document",
+                "clause-private",
+                "expected_label",
+            )
         )
+        witness = accepted[0]
+        candidate = {
+            "bindings_digest": context["bindings_digest"],
+            "profile_digests": context["profile_digests"],
+            "steps": [
+                {
+                    "table_id": witness["table_id"],
+                    "operation": {"name": "trim_text", "columns": witness["columns"]},
+                    "binding_ids": [witness["binding_id"]],
+                    "evidence": witness["evidence"],
+                }
+            ],
+        }
+        return typed_response(body, candidate)
 
     async def run():
         async with cleaning_plan_proposer(
-            selected_profile, budget, transport=httpx.MockTransport(respond)
+            adaptive_profile(),
+            recovery_policy.budget,
+            recovery_policy.bindings,
+            transport=httpx.MockTransport(respond),
         ) as proposer:
             return await proposer(issue, packet, 0, None)
 
     result = asyncio.run(run())
-    assert result == plan(bindings)
-    assert len(requests) == budget.snapshot()["run_attempts"] == 1
+    validate_plan(result, bindings)
+    assert result.steps[0].operation.name == "trim_text"
+    assert result.steps[0].binding_ids == (bindings.accepted[0].binding_id,)
+    assert len(requests) == recovery_policy.budget.snapshot()["run_attempts"] == 1
     assert requests[0]["model"] == "selected-model"
     assert requests[0]["max_tokens"] == 2048
-    assert "expected_label" not in json.dumps(requests[0])
 
 
-def test_offline_factory_rejects_before_transport_creation(tmp_path):
+@pytest.mark.parametrize("mode", ["registry", "replay"])
+def test_offline_factory_rejects_before_client_creation(tmp_path, monkeypatch, mode):
+    import datamate.inference.client as client
+
+    def forbidden_client(*args, **kwargs):
+        pytest.fail("offline factory opened a client")
+
+    monkeypatch.setattr(client, "inference_model", forbidden_client)
     budget = RequestBudget(tmp_path / "offline.sqlite", run_id="offline")
 
     async def run():
         with pytest.raises(ValueError, match="offline"):
-            async with cleaning_plan_proposer(None, budget, mode="replay"):
+            async with cleaning_plan_proposer(None, budget, None, mode=mode):
                 pass
 
     asyncio.run(run())
     assert budget.snapshot()["run_attempts"] == 0
 
 
-def test_actual_request_over_24k_is_refused_before_http_attempt(tmp_path):
-    bindings = SemanticBindings((), (), ("b" * 64,), ("table",))
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "bindings_digest",
+        "profile_digests",
+        "issue_id",
+        "scope",
+        "excerpt_hash",
+        "accepted_profile",
+        "accepted_source",
+        "profile_source",
+        "label_value",
+    ],
+)
+def test_malformed_or_stale_prompt_context_is_refused_before_http(tmp_path, invalid):
+    bindings = prompt_bindings()
+    issue, packet, _, _ = source_packet(tmp_path, bindings_digest=bindings.digest)
+    if invalid in {"bindings_digest", "profile_digests", "issue_id"}:
+        value = {
+            "bindings_digest": "d" * 64,
+            "profile_digests": ("d" * 64,),
+            "issue_id": "another-issue",
+        }[invalid]
+        packet = packet.model_copy(update={invalid: value})
+    elif invalid == "scope":
+        issue = issue.model_copy(update={"scope": "unknown-table"})
+    elif invalid == "excerpt_hash":
+        excerpt = packet.excerpts[0].model_copy(update={"text": "changed"})
+        packet = packet.model_copy(update={"excerpts": (excerpt,)})
+    elif invalid == "profile_source":
+        bindings = replace(
+            bindings, profile_sources=(("table", "d" * 64, "data/shop/x.csv", "c" * 64),)
+        )
+        packet = packet.model_copy(update={"bindings_digest": bindings.digest})
+    else:
+        binding = bindings.accepted[0]
+        if invalid == "accepted_profile":
+            binding = binding.model_copy(update={"profile_digest": "d" * 64})
+        elif invalid == "accepted_source":
+            proof = binding.evidence[0].model_copy(update={"source": "answers.jsonl"})
+            binding = binding.model_copy(update={"evidence": (proof,)})
+        else:
+            binding = binding.model_copy(update={"value": "expected_label_sentinel"})
+        bindings = replace(bindings, entries=(ResolvedBinding(binding, "ACCEPTED", "test"),))
+        packet = packet.model_copy(update={"bindings_digest": bindings.digest})
+    budget = RequestBudget(tmp_path / "invalid.sqlite", run_id="invalid")
+    sent = []
+
+    async def run():
+        with pytest.raises(ValueError, match="stale|scope|hash|source|reference|profile"):
+            async with cleaning_plan_proposer(
+                adaptive_profile(),
+                budget,
+                bindings,
+                transport=httpx.MockTransport(lambda request: sent.append(request)),
+            ) as proposer:
+                await proposer(issue, packet, 0, None)
+
+    asyncio.run(run())
+    assert budget.snapshot()["run_attempts"] == 0
+    assert sent == []
+
+
+@pytest.mark.parametrize("oversized", ["evidence", "bindings", "repair", "wire"])
+def test_combined_prompt_over_24k_requires_reselection_before_http(tmp_path, oversized):
+    bindings = prompt_bindings(value="v" * 23000 if oversized == "bindings" else "product_id")
     issue, packet, _, _ = source_packet(
-        tmp_path, lines=("x" * 23000,), bindings_digest=bindings.digest
+        tmp_path,
+        lines=(
+            "x" * 23000
+            if oversized == "evidence"
+            else "x" * 18000
+            if oversized == "wire"
+            else "Source row.",
+        ),
+        bindings_digest=bindings.digest,
     )
-    selected_profile = ModelProfile(
-        name="candidate",
-        model_id="selected-model",
-        base_url="http://localhost:8000/v1",
-        context_window=32768,
-        input_byte_limit=24000,
-        max_tokens=2048,
-    )
+    assert len(packet.model_dump_json().encode()) <= 24000
     budget = RequestBudget(tmp_path / "context.sqlite", run_id="context")
     sent = []
 
     async def run():
         async with cleaning_plan_proposer(
-            selected_profile,
+            adaptive_profile(),
             budget,
+            bindings,
             transport=httpx.MockTransport(lambda request: sent.append(request)),
         ) as proposer:
-            with pytest.raises(Exception, match="context|byte budget"):
-                await proposer(issue, packet, 0, None)
+            with pytest.raises(ValueError, match="reselect"):
+                await proposer(issue, packet, 0, "repair" * 5000 if oversized == "repair" else None)
 
     asyncio.run(run())
     assert budget.snapshot()["run_attempts"] == 0
