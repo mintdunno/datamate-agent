@@ -96,6 +96,33 @@ class DeduplicateOrderOperation(ContractModel):
     group_key: NonblankString
 
 
+class ResolveEntitiesOperation(ContractModel):
+    name: Literal["resolve_entities"] = "resolve_entities"
+    version: Literal["1"] = "1"
+    columns: tuple[NonblankString, ...] = Field(min_length=1, max_length=1)
+    scope: Literal["product", "customer"]
+    namespace: NonblankString
+    input_kind: Literal["id", "alias"] = "id"
+
+
+class NormalizeQuantityOperation(ContractModel):
+    name: Literal["normalize_quantity"] = "normalize_quantity"
+    version: Literal["1"] = "1"
+    product_column: NonblankString
+    quantity_column: NonblankString
+    unit_column: NonblankString
+    preconverted_column: NonblankString | None = None
+
+    @model_validator(mode="after")
+    def distinct_fields(self) -> Self:
+        columns = [self.product_column, self.quantity_column, self.unit_column]
+        if self.preconverted_column is not None:
+            columns.append(self.preconverted_column)
+        if len(set(columns)) != len(columns):
+            raise ValueError("quantity conversion requires distinct source fields")
+        return self
+
+
 class CleaningStep(ContractModel):
     table_id: NonblankString
     operation: Annotated[
@@ -105,7 +132,9 @@ class CleaningStep(ContractModel):
         | ClassifyStructureOperation
         | FillMergedOperation
         | InheritGroupOperation
-        | DeduplicateOrderOperation,
+        | DeduplicateOrderOperation
+        | ResolveEntitiesOperation
+        | NormalizeQuantityOperation,
         Field(discriminator="name"),
     ]
     binding_ids: tuple[Sha256, ...] = ()

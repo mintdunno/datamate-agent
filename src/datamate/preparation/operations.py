@@ -5,7 +5,7 @@ import json
 import re
 import unicodedata
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from decimal import Decimal, localcontext
 from uuid import uuid4
@@ -14,7 +14,9 @@ import polars as pl
 from duckdb import DuckDBPyConnection
 from openpyxl.styles.numbers import is_date_format
 
+from datamate.preparation.catalog import accept_entity_links, reconcile_quantity, resolve_units
 from datamate.preparation.models import (
+    Binding,
     CandidateFact,
     EvidenceRef,
     LineageEdge,
@@ -36,7 +38,7 @@ from datamate.preparation.storage import _decoded, read_staged_table
 
 _PARSE_ROLES = {
     "money": {"order_total", "line_net_amount", "payment_amount", "unit_cost"},
-    "quantity": {"quantity", "inventory_quantity"},
+    "quantity": {"quantity", "inventory_quantity", "quantity_base"},
     "id": {"order_id", "product_id", "customer_id"},
     "date": {"ordered_at", "payment_at"},
     "datetime": {"ordered_at", "payment_at"},
@@ -90,6 +92,8 @@ def validate_plan(plan: CleaningPlan, bindings: SemanticBindings) -> None:
         "preserve_raw": 3,
         "trim_text": 4,
         "parse_values": 5,
+        "resolve_entities": 6,
+        "normalize_quantity": 7,
     }
     previous = {}
     if len({step.step_id for step in plan.steps}) != len(plan.steps):
@@ -125,6 +129,8 @@ def validate_plan(plan: CleaningPlan, bindings: SemanticBindings) -> None:
             )
             if not {e.model_dump_json() for e in step.evidence} <= witnesses:
                 raise ValueError("operation evidence does not belong to accepted bindings")
+            if step.operation.name in {"resolve_entities", "normalize_quantity"}:
+                _validate_resolution_step(step, referenced)
             if step.operation.name == "parse_values":
                 for column in step.operation.columns:
                     if not any(
@@ -184,6 +190,39 @@ def validate_plan(plan: CleaningPlan, bindings: SemanticBindings) -> None:
                         for col in step.operation.columns
                     ):
                         raise ValueError("cannot inherit line-level fields")
+
+
+def _validate_resolution_step(step: CleaningStep, referenced: list[Binding]) -> None:
+    identifiers = {b.binding_id for b in referenced}
+    if any(not set(b.dependencies) <= identifiers for b in referenced):
+        raise ValueError("resolution requires accepted binding dependencies")
+    if not {e for b in referenced for e in b.evidence} <= set(step.evidence):
+        raise ValueError("resolution requires complete dependency evidence")
+
+    def require_role(column, roles):
+        if not any(
+            b.kind == "role" and b.value in roles and b.columns == (column,) for b in referenced
+        ):
+            raise ValueError("resolution field has no accepted source role")
+
+    operation = step.operation
+    if operation.name == "resolve_entities":
+        column = operation.columns[0]
+        role = operation.scope + ("_name" if operation.input_kind == "alias" else "_id")
+        require_role(column, {role})
+        if not any(
+            b.kind == "entity" and b.entity_scope == operation.scope and b.columns == (column,)
+            for b in referenced
+        ):
+            raise ValueError("entity resolution requires scoped source declarations")
+    else:
+        require_role(operation.product_column, {"product_id"})
+        require_role(operation.quantity_column, {"quantity", "inventory_quantity"})
+        require_role(operation.unit_column, {"unit"})
+        if operation.preconverted_column:
+            require_role(operation.preconverted_column, {"quantity_base"})
+        if not any(b.kind == "unit" and b.columns == (operation.unit_column,) for b in referenced):
+            raise ValueError("quantity conversion requires source unit declarations")
 
 
 class OperationState:
@@ -609,6 +648,193 @@ def _source_date_context(state: OperationState, table_id: str) -> tuple[dict, da
     return context, info[2]
 
 
+def _derived_value(
+    record: RawRecord,
+    column: str,
+    value: TypedValue,
+    dependencies: tuple[str, ...],
+    step: CleaningStep,
+    state: OperationState,
+) -> None:
+    if column in state.cells[record.record_id]:
+        raise ValueError("derived field already exists")
+    state.cells[record.record_id][column] = value
+    state.origins[record.record_id, column] = [step.step_id]
+    state.extra_lineage.extend(
+        LineageEdge("row:" + record.record_id, record.record_id, dependency, step.step_id)
+        for dependency in dependencies
+    )
+
+
+def _resolve_entities(
+    batch: Sequence[RawRecord], step: CleaningStep, state: OperationState
+) -> None:
+    operation = step.operation
+    column = operation.columns[0]
+    output = "entity_id_" + column
+    # Inspect every declaration in this table/scope, including conflicting candidates;
+    # selecting a smaller binding list must not hide a contradictory source map.
+    proposals = tuple(
+        e.binding
+        for e in state.bindings.entries
+        if e.binding.kind == "entity"
+        and e.binding.table_id == step.table_id
+        and e.binding.entity_scope == operation.scope
+    )
+    graph = accept_entity_links(proposals, state.bindings)
+    components = {
+        key: nodes for scope, nodes in graph.components if scope == operation.scope for key in nodes
+    }
+    blocked = set()
+    for conflict in graph.conflicts:
+        for key in (conflict.value, conflict.entity_target):
+            blocked.update(components.get(key, (key,)))
+    declared = {key for _, key, _ in graph.aliases}
+    declared.update(components)
+    authorized = {i for i in step.binding_ids}
+    for record in batch:
+        if state.dispositions[record.record_id].kind != "retained":
+            continue
+        before = record.source.values[int(column[1:]) - 1]
+        key = None
+        if type(before) is str and before == before.strip() and before:
+            if operation.input_kind == "id":
+                candidate = operation.namespace + ":" + before
+                if candidate in declared:
+                    key = candidate
+            elif (operation.scope, before) not in graph.ambiguous_aliases:
+                candidates = {
+                    key
+                    for scope, key, name in graph.aliases
+                    if scope == operation.scope
+                    and name == before
+                    and key.partition(":")[0] == operation.namespace
+                }
+                canonical = {min(components.get(key, (key,))) for key in candidates}
+                if len(canonical) == 1:
+                    key = next(iter(candidates))
+        supported = key is not None and key not in blocked
+        component = set(components.get(key, (key,))) if key else set()
+        required = [b for b in graph.accepted_links if b.value in component]
+        if operation.input_kind == "alias":
+            required.extend(
+                b
+                for b in proposals
+                if b.entity_relation == "alias"
+                and b.value in component
+                and b.entity_target == before
+                and (operation.scope, b.value, before) in graph.aliases
+            )
+        elif not required:
+            required.extend(
+                b
+                for b in proposals
+                if b.entity_relation == "alias"
+                and b.value == key
+                and (operation.scope, key, b.entity_target) in graph.aliases
+            )
+        supported = (
+            supported and bool(required) and all(b.binding_id in authorized for b in required)
+        )
+        after = min(component) if supported else None
+        if supported:
+            _derived_value(record, output, after, (column,), step, state)
+        state.events.append(
+            TransformEvent(
+                record.record_id,
+                output,
+                step.step_id,
+                "APPLIED" if supported else "UNRESOLVED",
+                before,
+                after,
+                "current scoped entity declaration"
+                if supported
+                else "identity lacks unique conflict-free source proof",
+            )
+        )
+
+
+def _decimal_quantity(value: TypedValue) -> Decimal:
+    if type(value) is int:
+        value = Decimal(value)
+    if not isinstance(value, Decimal):
+        raise ValueError("quantity must be an integer or Decimal")
+    # Reuse the declared lossless precision bound and finite-operand checks.
+    reconcile_quantity(value, value, None)
+    return value
+
+
+def _normalize_quantity(
+    batch: Sequence[RawRecord], step: CleaningStep, state: OperationState
+) -> None:
+    operation = step.operation
+    dependencies = (operation.product_column, operation.quantity_column, operation.unit_column)
+    if operation.preconverted_column:
+        dependencies += (operation.preconverted_column,)
+    declarations = {
+        state.binding_entries[i].binding.binding_id
+        for i in step.binding_ids
+        if state.binding_entries[i].binding.kind == "unit"
+    }
+    context = replace(
+        state.bindings,
+        entries=tuple(
+            replace(e, status="UNRESOLVED") if e.status == "CONFLICT" else e
+            for e in state.bindings.entries
+            if e.binding.table_id == step.table_id
+        ),
+    )
+    for record in batch:
+        if state.dispositions[record.record_id].kind != "retained":
+            continue
+        cells = state.cells[record.record_id]
+        before = cells.get(operation.quantity_column)
+        after = None
+        reason = "quantity lacks current product-scoped unit proof"
+        try:
+            product = record.source.values[int(operation.product_column[1:]) - 1]
+            unit = record.source.values[int(operation.unit_column[1:]) - 1]
+            if type(product) is not str or type(unit) is not str:
+                raise ValueError(reason)
+            resolution = resolve_units(context, product_id=product, unit=unit)
+            if resolution.status != "ACCEPTED":
+                raise ValueError("unit graph is unresolved or conflicting")
+            # Every source edge used for this row must be authorized and evidenced.
+            refs = {e for i in declarations for e in state.binding_entries[i].binding.evidence}
+            if not set(resolution.evidence) <= refs:
+                raise ValueError("unit path is missing accepted evidence dependencies")
+            raw_quantity = _decimal_quantity(before)
+            expected = reconcile_quantity(raw_quantity, Decimal(0), resolution.factor)
+            after = _decimal_quantity(expected.expected_base_quantity)
+            preconverted = cells.get(operation.preconverted_column)
+            if operation.preconverted_column and preconverted is not None:
+                preconverted = _decimal_quantity(preconverted)
+                if reconcile_quantity(raw_quantity, preconverted, resolution.factor).mismatch:
+                    raise ValueError("source preconverted quantity mismatch")
+                after = preconverted
+            for output, value in (
+                ("quantity_base", after),
+                ("quantity_base_unit", resolution.base_unit),
+                ("quantity_conversion_factor", resolution.factor),
+            ):
+                _derived_value(record, output, value, dependencies, step, state)
+            reason = "current product-scoped conversion and source reconciliation"
+        except ValueError as error:
+            after = None
+            reason = str(error)
+        state.events.append(
+            TransformEvent(
+                record.record_id,
+                "quantity_base",
+                step.step_id,
+                "APPLIED" if after is not None else "UNRESOLVED",
+                before,
+                after,
+                reason,
+            )
+        )
+
+
 def execute_batch(
     batch: Sequence[RawRecord], step: CleaningStep, state: OperationState
 ) -> BatchResult:
@@ -721,6 +947,10 @@ def execute_batch(
                         decision.reason,
                     )
                 )
+    elif step.operation.name == "resolve_entities":
+        _resolve_entities(batch, step, state)
+    elif step.operation.name == "normalize_quantity":
+        _normalize_quantity(batch, step, state)
     elif step.operation.name != "preserve_raw":
         raise ValueError("unregistered operation")
     facts = []

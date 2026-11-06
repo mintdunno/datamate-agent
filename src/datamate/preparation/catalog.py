@@ -393,6 +393,10 @@ _ROLE_HEADERS = {
     "payment_at": {"payment_at"},
     "inventory_quantity": {"inventory_quantity"},
     "unit_cost": {"unit_cost"},
+    "unit": {"unit"},
+    "quantity_base": {"quantity_base"},
+    "product_name": {"product_name"},
+    "customer_name": {"customer_name"},
 }
 _ROLE_DECLARATIONS = {
     "order_total": r"số khách phải trả (?:cho )?cả đơn",
@@ -574,6 +578,40 @@ def validate_bindings(
                         if re.search(field + r"\s+là\s+" + pattern + r"(?:[.;|]|$)", text):
                             accepted = True
                 reason = "explicit column declaration" if accepted else reason
+            elif proposal.kind in {"entity", "unit"}:
+                proof_context = SemanticBindings(
+                    (),
+                    tuple(clauses),
+                    tuple(p.digest for p in profiles),
+                    tuple(by_table),
+                    profile_sources=tuple(
+                        (p.table_id, p.digest, p.source, p.source_sha256) for p in profiles
+                    ),
+                )
+                roles = [
+                    entries[d].binding
+                    for d in proposal.dependencies
+                    if entries[d].binding.kind == "role"
+                    and entries[d].binding.table_id == proposal.table_id
+                ]
+                if proposal.kind == "entity":
+                    result = accept_entity_links((proposal,), proof_context)
+                    accepted = bool(result.accepted_links or result.aliases) and any(
+                        b.value in {f"{proposal.entity_scope}_id", f"{proposal.entity_scope}_name"}
+                        and set(proposal.columns) <= set(b.columns)
+                        for b in roles
+                    )
+                else:
+                    declaration = _unit_declaration(proposal)
+                    accepted = (
+                        declaration is not None
+                        and _literal_proof(proposal, proof_context, declaration)
+                        and any(b.value == "unit" and b.columns == proposal.columns for b in roles)
+                        and any(b.value == "product_id" for b in roles)
+                    )
+                # Acceptance proves a source declaration, not a conflict-free graph.
+                # Reviewed row operations independently check the entire scoped graph.
+                reason = "current scoped source declaration" if accepted else reason
             elif proposal.kind == "grain":
                 roles = {
                     entries[d].binding.value
@@ -809,6 +847,19 @@ def accept_entity_links(
         tuple(conflicts),
         tuple(unresolved),
     )
+
+
+def _unit_declaration(proposal: Binding) -> str | None:
+    if proposal.kind != "unit" or not proposal.unit_product:
+        return None
+    if proposal.unit_base is True and proposal.unit_target is None and proposal.unit_factor is None:
+        return f"unit_base[product={proposal.unit_product}]: {proposal.value}"
+    if proposal.unit_base is False and proposal.unit_target and proposal.unit_factor:
+        return (
+            f"unit_factor[product={proposal.unit_product}]: {proposal.value} = "
+            f"{proposal.unit_factor} {proposal.unit_target}"
+        )
+    return None
 
 
 def resolve_units(bindings: SemanticBindings, *, product_id: str, unit: str) -> UnitResolution:
