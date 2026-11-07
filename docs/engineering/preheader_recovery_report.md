@@ -198,3 +198,33 @@ Ignored evidence: `state/runs/preheader-live-biz122-v2/final-answer/` contains
 `result.json`, `solve_actual.json`, budget snapshots, the revision receipt and
 all successful after-run integrity checks. No tracked source changed; the earlier
 1,061-test and Ruff results remain historical checks of this unchanged code.
+
+## Bounded final smoke conclusion requested by the user
+
+The user requested a small test followed by a conclusion, without another full
+five-business pass. The fixed selection was recorded before execution: 26 test
+functions, expanding to 44 parametrized tests, on revision `e28f71b403e05ee84be4b2ea87ac0f4e8785229b`.
+
+Actual command: `.venv/Scripts/python.exe -X utf8 -m pytest -q <the 26 fixed node IDs
+in state/runs/m1-small-final-20261107/manifest.json> --tb=short`.
+Result: **44 passed in 42.30 seconds**. Both `.venv/Scripts/python.exe -X utf8 -m ruff
+check .` and `.venv/Scripts/python.exe -X utf8 -m ruff format --check .` passed
+(167 files formatted). No source-code edit or additional fix was needed.
+
+The tests exercised synthetic CSV/Excel/SQLite loading, text repair and protected
+keys, order-scoped fill/dedup, ambiguous money and source dates, calendar gaps,
+explicit amount formulas, proven/ambiguous product-unit relations, accepted/rejected
+metadata, source-field publication, restricted SQL bypass refusals, real qualified
+schema tracing, rollback/provider failure, and mocked cumulative stream accounting.
+The HTTP/model components in this new small set were mocked. No new live API request,
+full five-business preparation, checkpoint replay or full QA evaluation occurred.
+The real Google run ledger remains at seven attempts. Its previously verified
+SQL-to-answer result remains `5516`; it is separate live evidence, not a new live
+run in this small test.
+
+**Conclusion: the selected cleaning/recovery/SQL smoke checks PASS; the run found
+no new defect requiring a fix. Stop this fix/test round here.** This bounded result
+does not replace the approved five-business/reference-coverage gates, so it does
+not establish complete Milestone 1 acceptance. No quality gate or frozen reference
+was changed. Artifacts: `state/runs/m1-small-final-20261107/manifest.json`,
+`pytest.log` and `test-result.json`.
