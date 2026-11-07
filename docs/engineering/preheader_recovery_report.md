@@ -3,10 +3,11 @@
 Date: 2026-11-07. Branch: `feat/source-mapping-recovery`.
 Scope: train `biz_122`, `DonHang_ChiTiet_1.xlsx / T01-2025`.
 
-**Latest checkpoint after the user-requested retry:** Google returned HTTP 200;
-Gemma executed SQL successfully and retrieved the independently verified 5,516
-source records. The five-request run budget is exhausted; final model answer
-generation remains unverified. The earlier HTTP 500 is historical evidence.
+**Latest checkpoint: the complete selected vertical slice PASSED.** Real Gemma
+called SQL, received 5,516 verified source records and returned the typed numeric
+answer `5516`. Two additional calls respected the user's 30 RPM / 16,000 TPM
+constraints using serial requests spaced 61 seconds after response completion.
+Earlier HTTP failures and budget stops below are historical checkpoints.
 This is a source-observation diagnostic, not official QA accuracy or a complete
 Milestone 1 acceptance result. It follows the historical
 [source-field report](qualified_source_fields_report.md).
@@ -48,7 +49,7 @@ the answer/source gate while reducing model exchanges from four to two.
 | Raw records and lineage | 215,832 records accounted for; no missing/orphan records |
 | Selected source SQL | 5,516 records; all 11 recorded-unit totals match raw-source checks |
 | Initial real streamed solving | Stopped before tools by SDK usage overcount; preserved |
-| Fixed real Agent SQL/answer | BLOCKED: Google endpoint returned HTTP 500 before any tool call |
+| Fixed real Agent SQL/answer | PASS after the bounded final confirmation below; prior HTTP 500 retained |
 
 Preparation peak RSS was 2,522,812,416 bytes; peak disk was 1,017,027,732 bytes.
 Preparation/resource measurements completed within the configured limits.
@@ -152,3 +153,48 @@ passed for this diagnostic; the complete answer path is not yet verified.
 Ignored evidence: `state/runs/preheader-live-biz122-v2/http500-retry/` contains
 `result.json`, `solve_actual.json`, request-budget snapshots and integrity checks.
 No tracked source code changed and no full test suite was rerun for this retry.
+
+## Complete real SQL-to-answer confirmation
+
+The user supplied the provider constraints of **30 RPM and 16,000 TPM** when
+continuing the proposed two-call confirmation. The same ledger and immutable
+campaign were retained; the run ceiling was extended explicitly from five to
+seven for this bounded confirmation. No previous attempt was removed or reset.
+
+Real execution passed all selected diagnostic gates:
+
+1. Gemma called `execute_sql` with the selected source-table `SELECT count(*)`.
+2. Restricted SQL returned `5516` without truncation, matching raw-source evidence.
+3. The same agent consumed the tool result and returned the typed final answer
+   `{"type":"number","answer":5516}` with the bound diagnostic ID.
+4. Source files, implementation, model profile, cold manifest and helper hashes
+   stayed unchanged throughout the run.
+
+| Request | HTTP / stream | Input tokens | Output tokens |
+| --- | --- | ---: | ---: |
+| SQL tool selection | 200 / completed | 6,757 | 82 |
+| Final typed answer | 200 / completed | 7,391 | 21 |
+
+Total for this confirmation: **2 requests, 14,148 input / 103 output tokens**.
+SDK and persistent ledger token totals match. Agent elapsed time was **81.85
+seconds**, including rate waiting. The second request began **61.008 seconds
+after the first response finished**, or 75.076 seconds between request starts.
+Observed consumption stayed below 16,000 tokens even counting input and output
+together. No automated retry, model/backend fallback, thinking-mode change or
+output-cap change occurred.
+
+The configured local rate was 1 RPM, below the 30 RPM provider ceiling. The core
+accounting currently has no generic TPM limiter: this completion used an explicit
+serial cadence for this known diagnostic, not qualification of arbitrary prompts
+or concurrent workloads against a TPM limit.
+
+The ledger now retains **7 actual attempts** with **42,647 known input / 307 known
+output tokens** across the complete experiment. Earlier missing/incomplete usage
+still prevents a full billing assertion. The run stops here; no larger QA suite
+or full training evaluation was started. This PASS applies to the selected source
+observation slice, not official QA accuracy or complete Milestone 1 acceptance.
+
+Ignored evidence: `state/runs/preheader-live-biz122-v2/final-answer/` contains
+`result.json`, `solve_actual.json`, budget snapshots, the revision receipt and
+all successful after-run integrity checks. No tracked source changed; the earlier
+1,061-test and Ruff results remain historical checks of this unchanged code.
