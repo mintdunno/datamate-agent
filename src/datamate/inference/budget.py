@@ -5,6 +5,7 @@ import codecs
 import json
 import sqlite3
 import time
+import zlib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -351,11 +352,17 @@ def _retry_after(value: str | None) -> float | None:
             return None
 
 
+class StreamProtocolError(httpx.RemoteProtocolError):
+    """Unsupported or invalid provider stream framing/content encoding."""
+
+
 class RequestDeadlineExceeded(TimeoutError):
     """Absolute request deadline, distinct from socket inactivity timeouts."""
 
 
 def _transport_failure(error: BaseException) -> str:
+    if isinstance(error, StreamProtocolError):
+        return "STREAM_PROTOCOL_ERROR"
     if isinstance(error, BudgetExceeded):
         return "BUDGET_EXCEEDED"
     if isinstance(error, RequestDeadlineExceeded):
@@ -485,8 +492,11 @@ class _Observation:
 class _ObservedStream(httpx.AsyncByteStream):
     """Forward original bytes; decode only a bounded copy of each SSE event."""
 
-    def __init__(self, inner, observation, deadline):
+    def __init__(self, inner, observation, deadline, encoding="identity"):
         self.inner, self.observation, self.deadline = inner, observation, deadline
+        if encoding not in {"identity", "gzip"}:
+            raise StreamProtocolError("unsupported SSE content encoding")
+        self.compression = zlib.decompressobj(16 + zlib.MAX_WBITS) if encoding == "gzip" else None
         self.decoder = codecs.getincrementaldecoder("utf-8")()
         self.buffer = ""
         self.data = []
@@ -521,6 +531,27 @@ class _ObservedStream(httpx.AsyncByteStream):
             self.buffer = ""
             self.event()
 
+    def decode(self, chunk, *, final=False):
+        if self.compression is not None:
+            try:
+                chunk = self.compression.decompress(chunk, 1024 * 1024 + 1)
+                if (
+                    self.compression.unconsumed_tail
+                    or self.compression.unused_data
+                    or len(chunk) > 1024 * 1024
+                ):
+                    raise StreamProtocolError("compressed SSE exceeds bounded decoder capacity")
+                if final:
+                    chunk += self.compression.flush()
+                    if not self.compression.eof or len(chunk) > 1024 * 1024:
+                        raise StreamProtocolError("incomplete compressed SSE body")
+            except zlib.error as error:
+                raise StreamProtocolError("invalid compressed SSE body") from error
+        try:
+            return self.decoder.decode(chunk, final=final)
+        except UnicodeDecodeError as error:
+            raise StreamProtocolError("invalid UTF-8 SSE body") from error
+
     async def __aiter__(self):
         iterator = self.inner.__aiter__()
         try:
@@ -533,9 +564,9 @@ class _ObservedStream(httpx.AsyncByteStream):
                     self.observation.trace["first_body_byte_seconds"] = (
                         time.monotonic() - self.observation.sent
                     )
-                self.consume(self.decoder.decode(chunk))
+                self.consume(self.decode(chunk))
                 yield chunk
-            self.consume(self.decoder.decode(b"", final=True), final=True)
+            self.consume(self.decode(b"", final=True), final=True)
             complete = (
                 self.observation.trace["stream_done"] or self.observation.finish_reason is not None
             )
@@ -575,11 +606,31 @@ class BudgetTransport(httpx.AsyncBaseTransport):
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         try:
-            requested_stream = json.loads(request.content).get("stream") is True
+            request_payload = json.loads(request.content)
+            requested_stream = request_payload.get("stream") is True
         except (ValueError, AttributeError, TypeError):
             requested_stream = False
+            request_payload = {}
+        if requested_stream:
+            request.headers["accept-encoding"] = "identity"
         for attempt in range(self.max_retries + 1):
             obs = _Observation(self.budget, requested_stream)
+            timeouts = request.extensions.get("timeout", {})
+            obs.trace["timeouts"] = {
+                key: value
+                for key, value in timeouts.items()
+                if key in {"connect", "read", "write", "pool"}
+                and (value is None or type(value) in (int, float))
+            }
+            choice = request_payload.get("tool_choice")
+            obs.trace["tool_choice_requested"] = (
+                choice
+                if isinstance(choice, str) and choice in {"auto", "none", "required"}
+                else "named"
+                if isinstance(choice, dict)
+                else "not_provided"
+            )
+            obs.trace["deadline_seconds"] = self.deadline_seconds
             deadline = (
                 obs.started + self.deadline_seconds if self.deadline_seconds is not None else None
             )
@@ -607,7 +658,10 @@ class BudgetTransport(httpx.AsyncBaseTransport):
                 )
                 obs.trace["stream_received"] = is_sse
                 if is_sse and 200 <= response.status_code < 300:
-                    response.stream = _ObservedStream(response.stream, obs, deadline)
+                    encoding = response.headers.get("content-encoding", "identity").strip().lower()
+                    response.stream = _ObservedStream(
+                        response.stream, obs, deadline, encoding=encoding
+                    )
                     return response
                 await _bounded(response.aread, deadline)
                 try:
@@ -617,8 +671,11 @@ class BudgetTransport(httpx.AsyncBaseTransport):
                 obs.complete(completed=True)
             except BaseException as error:
                 obs.complete(error=error)
+                if response is not None:
+                    await response.aclose()
                 if (
-                    not isinstance(
+                    isinstance(error, StreamProtocolError)
+                    or not isinstance(
                         error,
                         (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError),
                     )

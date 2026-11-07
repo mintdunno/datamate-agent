@@ -210,7 +210,9 @@ def mapping_split(tmp_path):
     return tmp_path
 
 
-def mapping_transport(requests, *, role="line_net_amount", abstain=False):
+def mapping_transport(
+    requests, *, role="line_net_amount", abstain=False, streaming=False, finish_reason="tool_calls"
+):
     import json
 
     import httpx
@@ -220,7 +222,9 @@ def mapping_transport(requests, *, role="line_net_amount", abstain=False):
         body = json.loads(request.content)
         text = "".join(m["content"] for m in body["messages"] if isinstance(m.get("content"), str))
         context = json.loads(text.split("SOURCE_CONTEXT\n", 1)[1])
-        clause = next(c for c in context["clauses"] if "**" in c["quote"])
+        doc = next(d for d in context["documents"] if d["id"] == "D2")
+        line = next(line for line in doc["text"].splitlines() if "**" in line)
+        clause = {"clause_id": doc["id"] + ":" + line.split("|", 1)[0]}
         answer = (
             {"mappings": []}
             if abstain
@@ -231,12 +235,67 @@ def mapping_transport(requests, *, role="line_net_amount", abstain=False):
             }
         )
         requests.append(body)
+        if streaming:
+            from test_streaming_transport import Chunks, sse
+
+            tool = body["tools"][0]["function"]["name"]
+            events = [
+                sse(
+                    {
+                        "id": "mapping-stream",
+                        "created": 0,
+                        "model": "selected-model",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {
+                                    "role": "assistant",
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "id": "call1",
+                                            "type": "function",
+                                            "function": {
+                                                "name": tool,
+                                                "arguments": json.dumps(answer),
+                                            },
+                                        }
+                                    ],
+                                },
+                                "finish_reason": None,
+                            }
+                        ],
+                    }
+                ),
+                sse(
+                    {
+                        "id": "mapping-stream",
+                        "created": 0,
+                        "model": "selected-model",
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+                    }
+                ),
+                sse(
+                    {
+                        "id": "mapping-stream",
+                        "created": 0,
+                        "model": "selected-model",
+                        "choices": [],
+                        "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+                    }
+                ),
+                b"data: [DONE]\n\n",
+            ]
+            return httpx.Response(
+                200, headers={"content-type": "text/event-stream"}, stream=Chunks(events)
+            )
         return typed_response(body, answer)
 
     return httpx.MockTransport(respond)
 
 
-def test_automatic_issue_to_model_mapping_drives_existing_parser(tmp_path, monkeypatch):
+@pytest.mark.parametrize("streaming", [False, True])
+def test_automatic_issue_to_model_mapping_drives_existing_parser(tmp_path, monkeypatch, streaming):
     import asyncio
 
     from test_adaptive_normalization import adaptive_profile
@@ -256,9 +315,15 @@ def test_automatic_issue_to_model_mapping_drives_existing_parser(tmp_path, monke
             split_id="train",
             run_dir=tmp_path / "run",
             allow_model_calls=True,
-            profile=adaptive_profile(),
+            profile=adaptive_profile().model_copy(
+                update={
+                    "streaming": streaming,
+                    "supports_streaming": streaming,
+                    "force_output_tool": streaming,
+                }
+            ),
             budget=budget,
-            transport=mapping_transport(requests),
+            transport=mapping_transport(requests, streaming=streaming),
         )
     )
     assert result.status == "MAPPING_ACCEPTED"
@@ -276,6 +341,11 @@ def test_automatic_issue_to_model_mapping_drives_existing_parser(tmp_path, monke
         assert db.execute("SELECT count(*) FROM meta.normalization_issues").fetchone()[0] == 0
     assert len(requests) == budget.snapshot()["run_attempts"] == 1
     assert (tmp_path / "run/report.json").is_file()
+
+    assert bool(requests[0].get("stream")) == streaming
+    if streaming:
+        assert budget.snapshot()["request_traces"][-1]["completed"]
+        assert budget.snapshot()["token_usage_status"] == "reported_complete"
 
 
 @pytest.mark.parametrize("case", ["unsupported", "abstain", "offline"])
@@ -388,7 +458,7 @@ def test_executable_model_fields_are_rejected_without_format_retry(tmp_path, mon
         requests.append(body)
         return typed_response(body, {"mappings": [], "python": "raise RuntimeError()"})
 
-    with pytest.raises(PlanFormatError):
+    with pytest.raises(PlanFormatError) as captured:
         asyncio.run(
             propose_role_mapping(
                 adaptive_profile(),
@@ -400,6 +470,10 @@ def test_executable_model_fields_are_rejected_without_format_retry(tmp_path, mon
             )
         )
     assert len(requests) == budget.snapshot()["run_attempts"] == 1
+
+    assert captured.value.diagnostic["code"] == "OUTPUT_SCHEMA_INVALID"
+    assert captured.value.diagnostic["validation_errors"]
+    assert "raise RuntimeError" not in json.dumps(captured.value.diagnostic)
 
 
 def test_negated_field_statement_never_proves_mapping(tmp_path):
@@ -528,3 +602,113 @@ def test_mapping_request_can_exceed_24kb_when_profile_allows_it(tmp_path, monkey
     assert not result.mappings
     assert 24000 < sizes[0] <= 48000
     assert budget.snapshot()["run_attempts"] == 1
+
+
+def test_compact_context_keeps_complete_documents_and_short_source_citations(tmp_path):
+    from datamate.preparation.mapping import MappingProposal, mapping_bindings, mapping_prompt
+    from datamate.preparation.v2 import _source_roles
+
+    clauses, table = mapping_world(tmp_path)
+    context = json.loads(
+        mapping_prompt(table, clauses, _source_roles([table], clauses, ()), 48000).split(
+            "SOURCE_CONTEXT\n", 1
+        )[1]
+    )
+    assert len(context["documents"]) == 2
+    assert context["selection"]["complete_rulebook"]
+    readme = next(d for d in context["documents"] if d["id"] == "D2")
+    assert "**Montant**: thành tiền sau giảm" in readme["text"]
+    assert (
+        mapping_prompt(table, clauses, _source_roles([table], clauses, ()), 48000).count(
+            readme["sha256"]
+        )
+        == 1
+    )
+    proposal = MappingProposal.model_validate_json(
+        json.dumps(
+            {
+                "mappings": [
+                    {"column_id": "c0001", "role": "line_net_amount", "clause_ids": ["D2:L3"]}
+                ]
+            }
+        )
+    )
+    bindings = mapping_bindings(proposal, table, clauses)
+    assert bindings[0] in validate_bindings(clauses, [table], bindings).accepted
+    assert (
+        bindings[0].evidence[1].locator.startswith("clause:")
+        and len(bindings[0].evidence[1].quote_sha256) == 64
+    )
+
+
+def test_source_samples_are_bounded_and_retain_raw_row_provenance(tmp_path):
+    from datamate.preparation.mapping import sample_mapping_sources
+
+    clauses, table = mapping_world(tmp_path)
+    path = tmp_path / "data/shop/sales.csv"
+    database = tmp_path / "raw.duckdb"
+    with duckdb.connect(str(database)) as db:
+        create_storage(db)
+        staged = stage_table(
+            db, SourceFile(path, table.source, sha256_file(path)), next(load_tables(path))
+        )
+        profile = profile_table(db, staged.table_id)
+    sampled = sample_mapping_sources(database, [profile], profile, max_rows=1, max_bytes=8192)
+    assert len(sampled["tables"][0]["rows"]) == 1
+    row = sampled["tables"][0]["rows"][0]
+    assert row["record_id"].startswith(profile.table_id + ":") and row["source_row"] >= 2
+    assert row["values"]["c0001"]["value"] in ["1.600đ", "69k"]
+    assert sampled["tables"][0]["omitted_data_rows"] == 1
+    assert sampled["relationships_verified"] is False
+
+
+def test_failure_diagnostics_separate_timeouts_limits_and_schema_locations():
+    import httpx
+    from pydantic_ai.exceptions import UsageLimitExceeded
+
+    from datamate.inference.client import inference_failure
+    from datamate.preparation.mapping import MappingProposal
+
+    outer = RuntimeError("outer-private")
+    outer.__cause__ = httpx.ReadTimeout("private response")
+    assert inference_failure(outer)["code"] == "TIMEOUT_READ"
+    assert inference_failure(UsageLimitExceeded("no calls"))["code"] == "USAGE_LIMIT_EXCEEDED"
+    try:
+        MappingProposal.model_validate({"mappings": "private value"})
+    except Exception as error:
+        diagnostic = inference_failure(error)
+    assert diagnostic["code"] == "OUTPUT_SCHEMA_INVALID"
+    assert diagnostic["validation_errors"][0]["field"] == "mappings"
+    assert "private" not in json.dumps(diagnostic)
+
+
+def test_valid_but_truncated_streamed_mapping_is_not_accepted(tmp_path, monkeypatch):
+    import asyncio
+
+    from test_adaptive_normalization import adaptive_profile
+
+    from datamate.inference.budget import RequestBudget
+    from datamate.preparation.adaptive import PlanFormatError, propose_role_mapping
+    from datamate.preparation.v2 import _source_roles
+
+    monkeypatch.setenv("LLM_API_KEY", "fixture-only")
+    clauses, table = mapping_world(tmp_path)
+    bindings = _source_roles([table], clauses, ())
+    profile = adaptive_profile().model_copy(update={"streaming": True, "supports_streaming": True})
+    budget = RequestBudget(tmp_path / "ledger.sqlite", run_id="truncated", run_limit=1)
+    requests = []
+    with pytest.raises(PlanFormatError) as captured:
+        asyncio.run(
+            propose_role_mapping(
+                profile,
+                budget,
+                table,
+                clauses,
+                bindings,
+                transport=mapping_transport(
+                    requests, abstain=True, streaming=True, finish_reason="length"
+                ),
+            )
+        )
+    assert captured.value.diagnostic["code"] == "OUTPUT_TRUNCATED"
+    assert len(requests) == 1

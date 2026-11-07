@@ -5,11 +5,17 @@ from pathlib import Path
 
 import httpx
 from openai import AsyncOpenAI
+from pydantic import ValidationError
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from datamate.inference.budget import BudgetTransport, RequestBudget
+from datamate.inference.budget import (
+    BudgetExceeded,
+    BudgetTransport,
+    RequestBudget,
+    RequestDeadlineExceeded,
+)
 from datamate.inference.config import ModelProfile, credentials
 
 
@@ -111,3 +117,115 @@ async def inference_model(
             profile=capabilities,
             settings=model_settings(profile),
         )
+
+
+def inference_failure(error: BaseException, request_trace: dict | None = None) -> dict:
+    """Classify safe structured causes; never serialize exception payloads or text."""
+    trace = request_trace or {}
+    causes = []
+    pending = [error]
+    seen = set()
+    while pending and len(causes) < 12:
+        item = pending.pop(0)
+        if id(item) in seen:
+            continue
+        seen.add(id(item))
+        causes.append(item)
+        pending.extend(c for c in (item.__cause__, item.__context__) if c is not None)
+    diagnostic = {
+        "code": "INFERENCE_ERROR",
+        "phase": "unknown",
+        "error_type": type(error).__name__,
+        "cause_types": list(dict.fromkeys(type(c).__name__ for c in causes)),
+        "provider_queue_or_reasoning": "unknown",
+    }
+
+    def result(code, phase):
+        diagnostic.update(code=code, phase=phase)
+        return diagnostic
+
+    if any(isinstance(c, BudgetExceeded) for c in causes):
+        return result("BUDGET_EXCEEDED", "budget")
+    if any(isinstance(c, ContextBudgetExceeded) for c in causes):
+        return result("CONTEXT_BUDGET_EXCEEDED", "context")
+    if any(type(c).__name__ == "UsageLimitExceeded" for c in causes):
+        if trace.get("has_content") and not trace.get("has_tool_calls"):
+            diagnostic["output_diagnostic"] = "OUTPUT_TOOL_NOT_CALLED"
+        return result("USAGE_LIMIT_EXCEEDED", "agent")
+    if any(isinstance(c, RequestDeadlineExceeded) for c in causes):
+        return result("DEADLINE_EXCEEDED", "transport")
+    for kind, code in (
+        (httpx.ConnectTimeout, "TIMEOUT_CONNECT"),
+        (httpx.ReadTimeout, "TIMEOUT_READ"),
+        (httpx.WriteTimeout, "TIMEOUT_WRITE"),
+        (httpx.PoolTimeout, "TIMEOUT_POOL"),
+    ):
+        if any(isinstance(c, kind) for c in causes):
+            return result(code, "transport")
+    if any(
+        type(c).__name__ in {"ModelTimeoutError", "APITimeoutError", "TimeoutError"} for c in causes
+    ):
+        return result("TIMEOUT_UNCLASSIFIED", "transport")
+    status = next(
+        (c.status_code for c in causes if type(getattr(c, "status_code", None)) is int),
+        trace.get("http_status"),
+    )
+    if type(status) is int and status >= 400:
+        diagnostic["http_status"] = status
+        return result("PROVIDER_RATE_LIMIT" if status == 429 else "PROVIDER_HTTP_ERROR", "provider")
+    if trace.get("stream_requested") and not trace.get("stream_received"):
+        return result("STREAM_PROTOCOL_MISMATCH", "provider")
+    if trace.get("provider_stream_error"):
+        return result("PROVIDER_STREAM_ERROR", "provider")
+    if trace.get("finish_reason") == "length" or any(
+        type(c).__name__ == "IncompleteToolCall" for c in causes
+    ):
+        return result("OUTPUT_TRUNCATED", "output")
+    if trace.get("finish_reason") == "content_filter":
+        return result("OUTPUT_FILTERED", "output")
+    fields = {
+        "mappings",
+        "column_id",
+        "role",
+        "clause_ids",
+        "steps",
+        "operation",
+        "name",
+        "binding_ids",
+        "evidence",
+        "source",
+        "sha256",
+        "locator",
+        "line_start",
+        "line_end",
+        "quote_sha256",
+        "bindings_digest",
+        "profile_digests",
+    }
+    for cause in causes:
+        if isinstance(cause, ValidationError):
+            errors = []
+            for item in cause.errors(include_input=False, include_context=False)[:8]:
+                location = ".".join(
+                    str(p) if type(p) is int or p in fields else "<extra_field>"
+                    for p in item["loc"]
+                )
+                errors.append({"field": location, "type": item["type"]})
+            diagnostic["validation_errors"] = errors
+            code = (
+                "OUTPUT_INVALID_JSON"
+                if any(e["type"] == "json_invalid" for e in errors)
+                else "OUTPUT_SCHEMA_INVALID"
+            )
+            return result(code, "output")
+    if trace.get("has_content") and not trace.get("has_tool_calls"):
+        return result("OUTPUT_TOOL_NOT_CALLED", "output")
+    if trace.get("failure_code"):
+        return result(trace["failure_code"], "transport")
+    if any(isinstance(c, (httpx.NetworkError, httpx.RemoteProtocolError)) for c in causes):
+        return result("NETWORK_ERROR", "transport")
+    if any(type(c).__name__ in {"UnexpectedModelBehavior", "PlanFormatError"} for c in causes):
+        return result("OUTPUT_VALIDATION_FAILED", "output")
+    if any(isinstance(c, ValueError) for c in causes):
+        return result("CONFIGURATION_OR_CONTEXT_ERROR", "configuration")
+    return diagnostic

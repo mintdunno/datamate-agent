@@ -345,8 +345,9 @@ async def prepare_with_mapping_recovery(
     Mapping acceptance is not business qualification. No issue-selector callback,
     evaluator knowledge, arbitrary code, model-authored evidence or hidden retry is used.
     """
+    from datamate.inference.client import inference_failure
     from datamate.preparation.adaptive import propose_role_mapping
-    from datamate.preparation.mapping import mapping_bindings
+    from datamate.preparation.mapping import mapping_bindings, sample_mapping_sources
 
     if allow_model_calls and (profile is None or budget is None):
         raise ValueError("adaptive model calls require an explicit profile and budget")
@@ -444,11 +445,26 @@ async def prepare_with_mapping_recovery(
                 bindings,
                 transport=transport,
                 env_file=env_file,
+                source_samples=sample_mapping_sources(
+                    baseline.database,
+                    profiles,
+                    selected_profile,
+                    max_bytes=max(1000, profile.input_byte_limit // 4),
+                ),
             )
         except Exception as error:
             # This is an explicit proposal boundary: retain results and record failure,
             # including provider errors and exhausted budgets. Never retry or switch models.
             trace["proposal_error_type"] = type(error).__name__
+            snapshot = budget.snapshot()
+            requests = (
+                snapshot.get("request_traces", [])
+                if snapshot["run_attempts"] > initial_attempts
+                else []
+            )
+            trace["proposal_failure"] = getattr(error, "diagnostic", None) or inference_failure(
+                error, requests[-1] if requests else None
+            )
             if isinstance(error, ValueError):
                 trace["proposal_error"] = str(error)[:240]
             return finish("PARTIAL", "Mapping proposal failed; baseline retained.")

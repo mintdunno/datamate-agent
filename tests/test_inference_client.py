@@ -286,3 +286,5 @@ def test_typed_stream_drains_usage_and_uses_configured_timeouts(tmp_path):
     assert requests[0]["tool_choice"] == "required"
     assert budget.snapshot()["run_output_tokens"] == 8
     assert budget.snapshot()["request_traces"][0]["completed"]
+    assert budget.snapshot()["request_traces"][0]["timeouts"]["read"] == 300
+    assert budget.snapshot()["request_traces"][0]["tool_choice_requested"] == "required"

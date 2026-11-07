@@ -300,8 +300,10 @@ The shared request ledger defaults to 25 RPM, 1,200 daily requests and a four-at
 run ceiling. A mapping invocation sends at most one request with zero hidden retries;
 `--phase smoke` or the default `development` consumes the existing campaign quota.
 No model, backend, thinking mode or quantization fallback occurs. Source context
-includes complete active-business README clauses and four lexical active-rulebook
-clauses; omission count/digest are explicit and never establish source absence.
+includes the full active rulebook and business README once per document, with
+numbered source lines and short locally resolved citations. Bounded deterministic
+raw samples include source row IDs and explicit omissions; other sampled tables
+remain unverified relationship candidates, not accepted joins.
 Oversized context refuses before HTTP. Accepted mappings regenerate deterministic
 registry operations in an isolated candidate, require unchanged raw staging and no
 READY-scope regression, and use the existing audited atomic promotion.
@@ -340,3 +342,12 @@ usage is recorded once at EOF/close. Missing usage stays unavailable. Partial st
 are not retried. Neither authorization headers nor generated/source text is stored in
 these timing traces. Slow first output does not identify provider queue vs model
 prefill/reasoning without additional provider metrics.
+
+Mapping proposals stream only when the selected profile explicitly enables it.
+The agent drains the response through usage/finish events before typed acceptance.
+Reports distinguish transport timeout phases, deadline, provider errors, local
+request limits, absent tool calls, malformed/schema-invalid output and truncation.
+Validation diagnostics contain trusted field paths/error types, never rejected
+values. Strict tool schemas and forced output tools are separate backend features;
+unsupported parameters fail visibly and never trigger a silent fallback.
+No automatic format retry is enabled in the bounded mapping qualification.

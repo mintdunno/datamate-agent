@@ -1,5 +1,6 @@
 """Bounded, source-only Level 1 proposals with transactional acceptance."""
 
+import asyncio
 import hashlib
 import inspect
 import json
@@ -35,6 +36,10 @@ from datamate.preparation.operations import validate_plan
 
 class PlanFormatError(ValueError):
     """One malformed model response; a repair consumes another logical request."""
+
+    def __init__(self, message: str, *, diagnostic: dict | None = None):
+        super().__init__(message)
+        self.diagnostic = diagnostic
 
 
 def _format_validation_error(error: Exception) -> str:
@@ -472,7 +477,7 @@ async def cleaning_plan_proposer(
         ),
     }
     from pydantic_ai import Agent, UsageLimits
-    from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
+    from pydantic_ai.exceptions import UnexpectedModelBehavior
 
     from datamate.inference.client import ContextBudgetExceeded, inference_model
 
@@ -526,7 +531,7 @@ async def cleaning_plan_proposer(
                 raise ValueError(
                     "combined request exceeds byte budget; reselect evidence explicitly"
                 ) from error
-            except (UnexpectedModelBehavior, UsageLimitExceeded, ValidationError) as error:
+            except (UnexpectedModelBehavior, ValidationError) as error:
                 raise PlanFormatError(_format_validation_error(error)) from error
             return result.output
 
@@ -542,25 +547,59 @@ async def propose_role_mapping(
     *,
     transport: AsyncBaseTransport | None = None,
     env_file: Path | None = None,
+    source_samples: dict | None = None,
 ) -> MappingProposal:
-    """One actual request at most; format errors and exhaustion never retry silently."""
+    """Drain typed output streams; preserve distinct transport, usage and output failures."""
     from pydantic_ai import Agent, UsageLimits
-    from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
+    from pydantic_ai.exceptions import UnexpectedModelBehavior
 
-    from datamate.inference.client import inference_model
-    from datamate.preparation.mapping import MappingProposal, mapping_prompt
+    from datamate.inference.budget import RequestDeadlineExceeded
+    from datamate.inference.client import inference_failure, inference_model
+    from datamate.preparation.mapping import mapping_prompt
 
     if budget.rpm > 40:
         raise ValueError("adaptive provider rate cannot exceed 40 RPM")
     if profile.runtime == "nim" and budget.campaign_id is None:
         raise ValueError("NIM adaptive proposals require the shared campaign ledger")
-    prompt = mapping_prompt(table_profile, clauses, bindings, profile.input_byte_limit)
+    prompt = mapping_prompt(
+        table_profile, clauses, bindings, profile.input_byte_limit, source_samples=source_samples
+    )
+
+    async def drain(ctx, events):
+        async for _event in events:
+            pass
+
     async with inference_model(
         profile, budget, transport=transport, max_retries=0, env_file=env_file
     ) as model:
         agent = Agent(model, output_type=MappingProposal, retries=0)
         try:
-            result = await agent.run(prompt, usage_limits=UsageLimits(request_limit=1))
-        except (UnexpectedModelBehavior, UsageLimitExceeded, ValidationError) as error:
-            raise PlanFormatError("invalid typed role mapping output") from error
+            async with asyncio.timeout(profile.request_deadline_seconds):
+                result = await agent.run(
+                    prompt,
+                    usage_limits=UsageLimits(request_limit=1),
+                    event_stream_handler=drain if profile.streaming else None,
+                )
+        except TimeoutError as error:
+            raise RequestDeadlineExceeded("mapping request deadline exceeded") from error
+        except (UnexpectedModelBehavior, ValidationError) as error:
+            traces = budget.snapshot().get("request_traces", [])
+            diagnostic = inference_failure(error, traces[-1] if traces else None)
+            raise PlanFormatError(
+                "typed mapping failed: " + diagnostic["code"], diagnostic=diagnostic
+            ) from error
+        traces = budget.snapshot().get("request_traces", [])
+        trace = traces[-1] if traces else {}
+        if trace.get("finish_reason") in {"length", "content_filter"}:
+            diagnostic = inference_failure(
+                PlanFormatError("provider did not complete output"), trace
+            )
+            raise PlanFormatError(diagnostic["code"], diagnostic=diagnostic)
+        if profile.streaming and (not trace.get("stream_received") or not trace.get("completed")):
+            code = (
+                "STREAM_PROTOCOL_MISMATCH"
+                if not trace.get("stream_received")
+                else "STREAM_INCOMPLETE"
+            )
+            raise PlanFormatError(code, diagnostic={"code": code, "phase": "provider"})
         return result.output

@@ -153,3 +153,81 @@ def test_early_close_records_incomplete_stream_without_usage(tmp_path):
     assert not snap["request_traces"][0]["completed"]
     assert snap["request_traces"][0]["failure_code"] == "STREAM_CLOSED_EARLY"
     assert snap["run_usage_responses"] == 0
+
+
+@pytest.mark.parametrize("failure", ["read", "deadline", "cancel"])
+def test_nonstreaming_failed_body_is_closed(tmp_path, failure):
+    ready = asyncio.Event()
+
+    class Body(Chunks):
+        async def __aiter__(self):
+            yield b"{"
+            ready.set()
+            if failure == "read":
+                raise httpx.ReadTimeout("unreported body")
+            await asyncio.Event().wait()
+
+    stream = Body([])
+    budget = RequestBudget(tmp_path / "ledger.sqlite", run_id="close-body")
+
+    async def run():
+        transport = BudgetTransport(
+            httpx.MockTransport(lambda req: httpx.Response(200, stream=stream)),
+            budget,
+            max_retries=0,
+            deadline_seconds=0.02 if failure == "deadline" else 1,
+        )
+        task = asyncio.create_task(
+            transport.handle_async_request(httpx.Request("POST", "https://provider"))
+        )
+        if failure == "cancel":
+            await ready.wait()
+            task.cancel()
+        with pytest.raises((httpx.ReadTimeout, TimeoutError, asyncio.CancelledError)):
+            await task
+        assert stream.closed
+        await transport.aclose()
+
+    asyncio.run(run())
+    assert budget.snapshot()["run_attempts"] == 1
+
+
+def test_gzip_sse_is_decoded_for_observation_without_corrupting_forwarded_body(tmp_path):
+    import gzip
+
+    body = (
+        sse(
+            {
+                "choices": [{"delta": {"content": "xin chào"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+            }
+        )
+        + b"data: [DONE]\n\n"
+    )
+    wire = gzip.compress(body)
+    stream = Chunks([wire[:11], wire[11:]])
+    budget = RequestBudget(tmp_path / "ledger.sqlite", run_id="gzip")
+
+    async def run():
+        transport = BudgetTransport(
+            httpx.MockTransport(
+                lambda req: httpx.Response(
+                    200,
+                    headers={"content-type": "text/event-stream", "content-encoding": "gzip"},
+                    stream=stream,
+                )
+            ),
+            budget,
+            max_retries=0,
+        )
+        response = await transport.handle_async_request(
+            httpx.Request("POST", "https://provider", json={"stream": True})
+        )
+        assert await response.aread() == body
+        await response.aclose()
+        await transport.aclose()
+
+    asyncio.run(run())
+    assert stream.closed
+    assert budget.snapshot()["run_output_tokens"] == 2
+    assert budget.snapshot()["request_traces"][-1]["completed"]
