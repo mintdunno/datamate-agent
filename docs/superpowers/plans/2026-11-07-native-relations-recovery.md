@@ -54,8 +54,25 @@ Files: orchestration.py, existing preparation CLI, mapping.py and adaptive-flow 
 ## Task 4 — Qualification campaign and report
 
 Files: ignored state campaign artifacts; README and concise engineering evidence report.
-- [ ] Freeze source/case/profile/revision identities and baseline; use existing evaluator references only outside preparation.
-- [ ] Run deterministic regressions before consuming Google requests; bounded smoke/development, freeze then one checkpoint.
-- [ ] Audit full selected source records within existing resource limits. Record exceptions/time/resource stops honestly.
-- [ ] Run final pytest/Ruff/dependency checks, inspect staged paths and secrets, commit only relevant source/docs/tests.
-- [ ] Report before/after cases, actual HTTP attempts/provider token usage, unchanged sources, unresolved scopes and PASS/PARTIAL status.
+- [x] Freeze source/case/profile/revision identities and baseline; use existing evaluator references only outside preparation.
+- [x] Run deterministic regressions before consuming Google requests; bounded smoke/development, freeze then one checkpoint.
+- [x] Audit full selected source records within existing resource limits. Record exceptions/time/resource stops honestly.
+- [x] Run final pytest/Ruff/dependency checks, inspect staged paths and secrets, commit only relevant source/docs/tests.
+- [x] Report before/after cases, actual HTTP attempts/provider token usage, unchanged sources, unresolved scopes and PASS/PARTIAL status.
+
+
+## Execution outcome
+
+Implementation units and the bounded campaign completed on code revision `87f8fe3`.
+All 937 tests, Ruff and dependency compatibility checks passed. Five full businesses
+completed cold preparation/audit within limits. Development improved from 22/34 to
+27/34 verified determinate successes; one header-disposition mismatch remains.
+The locked checkpoint completed once (2/4 verified determinate successes); its
+individual failures were not used for tuning. Sources and frozen hashes are unchanged.
+
+**Milestone 1 remains PARTIAL; the strict campaign quality gate is FAIL.** Financial
+role/derivation coverage, dynamic source-field publication, insufficient verified
+reference coverage and whole-business SML qualification remain unresolved. Full
+artifacts currently publish no factual business projections. No gate was relaxed,
+checkpoint reset, extra API budget, merge or push was used. See
+[the evidence report](../../engineering/native_relations_report.md).

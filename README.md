@@ -311,9 +311,9 @@ READY-scope regression, and use the existing audited atomic promotion.
 Inspect the run `report.json` for proposal/validation/usage details.
 `MAPPING_ACCEPTED` confirms source-backed role changes; it does **not** mean the
 business is qualified. Novel wording without registered distinguishing evidence
-remains unresolved. Native row-based unit declarations and name-to-ID conversion
-proof are still unsupported by this role-only path; it never manufactures literal
-unit rules or treats a name resemblance as identity evidence.
+remains unresolved. A role proposal cannot manufacture unit rules or authorize
+identity from name resemblance. Independently validated native source-row receipts
+can establish product/unit relations as described below.
 
 The default profiles retain their conservative budgets for reproducibility. To
 allow a larger request, choose explicit values in a compatible model profile, for
@@ -435,3 +435,9 @@ negations, ambiguity and unfamiliar meanings remain unresolved. Pass this file t
 `--policy` or `PreparationPolicy(readme_roles=True)`. The default remains false for
 legacy baseline reproduction; this is an explicit preparation setting, not a model
 or backend fallback.
+
+
+The current native-relation pilot has **Milestone 1 PARTIAL** status and a **FAIL**
+strict five-business quality gate. Full-source execution, cell-level improvements,
+SML evidence and remaining SQL/financial-contract gaps are recorded in the
+[qualification report](docs/engineering/native_relations_report.md).
