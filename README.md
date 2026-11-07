@@ -426,3 +426,12 @@ Unicode finalization/audit materializes key domains only for viable repair candi
 and their complete native foreign-key component. Clean identifier columns and unrelated
 components require no key-domain materialization. When a repair is considered, every
 required domain value is still checked; no sampled uniqueness or FK proof is substituted.
+
+
+`config/normalization/native_preparation.json` enables `readme_roles`: deterministic
+discovery of every already-supported, exact positive field declaration before model
+fallback. It uses the same file-scoped source validator as model-proposed mappings;
+negations, ambiguity and unfamiliar meanings remain unresolved. Pass this file through
+`--policy` or `PreparationPolicy(readme_roles=True)`. The default remains false for
+legacy baseline reproduction; this is an explicit preparation setting, not a model
+or backend fallback.

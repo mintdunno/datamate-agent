@@ -189,7 +189,9 @@ async def prepare_with_recovery(
             for item in baseline.catalog["tables"]
         )
         clauses = compile_clauses(inputs.documents, split_id=split_id)
-        full_bindings = _source_roles(profiles, clauses, policy.binding_proposals)
+        full_bindings = _source_roles(
+            profiles, clauses, policy.binding_proposals, readme_roles=policy.readme_roles
+        )
         from datamate.preparation.native_relations import enrich_native_relations
 
         with duckdb.connect(str(baseline.database), read_only=True) as source_db:
@@ -416,7 +418,9 @@ async def prepare_with_mapping_recovery(
             TableProfile.model_validate_json(json.dumps(p)) for p in baseline.catalog["tables"]
         )
         clauses = compile_clauses(inputs.documents, split_id=split_id)
-        bindings = _source_roles(profiles, clauses, policy.binding_proposals)
+        bindings = _source_roles(
+            profiles, clauses, policy.binding_proposals, readme_roles=policy.readme_roles
+        )
         from datamate.preparation.native_relations import enrich_native_relations
 
         with duckdb.connect(str(baseline.database), read_only=True) as source_db:
@@ -494,7 +498,12 @@ async def prepare_with_mapping_recovery(
         ):
             return finish("PARTIAL", "Proposal would overwrite accepted source semantics.")
         proposed = tuple(b for b in proposed if (b.table_id, b.columns) not in current)
-        reviewed = _source_roles(profiles, clauses, (*policy.binding_proposals, *proposed))
+        reviewed = _source_roles(
+            profiles,
+            clauses,
+            (*policy.binding_proposals, *proposed),
+            readme_roles=policy.readme_roles,
+        )
         accepted_ids = {b.binding_id for b in reviewed.accepted}
         accepted = tuple(b for b in proposed if b.binding_id in accepted_ids)
         trace["mapping_validation"] = [

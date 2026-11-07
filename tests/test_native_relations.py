@@ -367,3 +367,35 @@ def test_clean_identity_columns_do_not_materialize_repair_domains(tmp_path, monk
             text_state.finalize_text_state(db, bindings)
         else:
             assert text_state.audit_text_state(db) == {}
+
+
+@pytest.mark.parametrize("negated", [False, True])
+def test_exact_readme_discovery_resolves_native_fields_without_model_calls(tmp_path, negated):
+    root = native_world(tmp_path, names_only=True)
+    shop = root / "data/shop"
+    (shop / "sales.csv").write_text(
+        "Chứng từ,Tên dòng,Lượng,ĐVT dòng,Tiền dòng\nO1,Alpha,1,vỉ,1200\nO2,Beta,2,hộp,500\n",
+        encoding="utf-8",
+    )
+    readme = shop / "README.md"
+    money = "không phải thành tiền sau giảm" if negated else "thành tiền sau giảm"
+    readme.write_text(
+        readme.read_text(encoding="utf-8") + "\n## Cột trong sales.csv\n- **Chứng từ**: mã đơn\n"
+        "- **Tên dòng**: tên hàng\n- **Lượng**: số lượng\n"
+        "- **ĐVT dòng**: đơn vị tính\n- **Tiền dòng**: " + money + "\n",
+        encoding="utf-8",
+    )
+    result = prepare_business(
+        root,
+        "shop",
+        tmp_path / "cache",
+        split_id="train",
+        policy=PreparationPolicy(readme_roles=True),
+    )
+    assert result.catalog["api_attempts"] == 0
+    if negated:
+        assert result.catalog["qualification"]["order_lines"] != "READY"
+        assert facts(result)[0]["c0005"] == "1200"
+    else:
+        assert result.catalog["qualification"]["order_lines"] == "READY"
+        assert [row["quantity_base"] for row in facts(result)] == [12, 12]

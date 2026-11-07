@@ -68,6 +68,7 @@ class SourceEncodingHint(ContractModel):
 
 
 class PreparationPolicy(ContractModel):
+    readme_roles: bool = False
     mode: Literal["registry", "replay"] = "registry"
     binding_proposals: tuple[Binding, ...] = ()
     frozen_plan: CleaningPlan | None = None
@@ -88,7 +89,9 @@ def _json(value: object) -> str:
     )
 
 
-def _source_roles(profiles, clauses, supplied: tuple[Binding, ...]) -> SemanticBindings:
+def _source_roles(
+    profiles, clauses, supplied: tuple[Binding, ...], *, readme_roles: bool = False
+) -> SemanticBindings:
     from datamate.preparation.text_state import effective_header
 
     # Dependency-bearing proposals need native roles before their final validation.
@@ -110,7 +113,7 @@ def _source_roles(profiles, clauses, supplied: tuple[Binding, ...]) -> SemanticB
                 cited = [
                     c
                     for c in clauses
-                    if role in {"unit", "base_unit", "unit_factor"}
+                    if (readme_roles or role in {"unit", "base_unit", "unit_factor"})
                     and c.status != "CONFLICT"
                     and _declared_role(name, role, profile, c)
                 ]
@@ -575,7 +578,9 @@ def _build(workspace: Path, *, inputs: BusinessInputs, policy: PreparationPolicy
                 "INSERT OR REPLACE INTO meta.profiles VALUES (?,?)",
                 [profile.table_id, profile.model_dump_json()],
             )
-        bindings = _source_roles(profiles, clauses, policy.binding_proposals)
+        bindings = _source_roles(
+            profiles, clauses, policy.binding_proposals, readme_roles=policy.readme_roles
+        )
         from datamate.preparation.native_relations import enrich_native_relations
 
         finalize_text_state(db, bindings)
