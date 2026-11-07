@@ -103,3 +103,25 @@ def test_existing_source_amount_is_not_replaced_by_derivation(tmp_path):
         assert not any(
             s.operation.name == "derive_line_amount" for s in registry_plan(bindings).steps
         )
+
+
+def test_independent_formula_audit_detects_candidate_corruption(tmp_path):
+    from datamate.preparation.audit import audit_prepared
+
+    db, bindings = formula_world(tmp_path)
+    with db:
+        build_candidate(db, registry_plan(bindings), bindings)
+        good = audit_prepared(db, bindings)
+        assert (
+            next(f.status for f in good.findings if f.check_id == "source_line_formula") == "PASS"
+        )
+        row = db.execute(
+            "SELECT fact_id,values_json FROM meta.facts WHERE table_role='physical_row'"
+        ).fetchone()
+        payload = json.loads(row[1])
+        payload["derived_line_net_amount"]["value"] = "200"
+        db.execute(
+            "UPDATE meta.facts SET values_json=? WHERE fact_id=?", [json.dumps(payload), row[0]]
+        )
+        bad = audit_prepared(db, bindings)
+        assert next(f.status for f in bad.findings if f.check_id == "source_line_formula") == "FAIL"

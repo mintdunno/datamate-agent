@@ -198,6 +198,7 @@ class StructuredTools:
     def _qualified_relations(self) -> dict[str, dict]:
         relations = {}
         profiles = {table["table_id"]: table for table in self.catalog["tables"]}
+        source_receipt_verified = False
         try:
             with duckdb.connect(
                 str(self.database), read_only=True, config={"enable_external_access": False}
@@ -252,9 +253,52 @@ class StructuredTools:
                     }
                     if not set(roles) <= lineage_roles:
                         raise ValueError("qualified projection is missing field lineage")
+                    from datamate.preparation.source_fields import source_metadata, source_view_sql
+
+                    source_policy = source_metadata(db, scope)
+                    if source_policy is not None:
+                        from datamate.preparation.audit import read_report
+
+                        if not source_receipt_verified:
+                            read_report(db)
+                            source_receipt_verified = True
+                        if (
+                            projection.get("kind") != "source_fields"
+                            or projection.get("source_field_policy") != source_policy
+                            or sources != [source_policy["source_table_id"]]
+                            or roles != list(source_policy["fields"])
+                        ):
+                            raise ValueError("source field policy disagrees with audit metadata")
+                        views = db.execute(
+                            "SELECT sql FROM duckdb_views() WHERE schema_name='clean' "
+                            "AND view_name=?",
+                            [scope],
+                        ).fetchall()
+                        expected = sqlglot.parse_one(source_view_sql(scope, roles), read="duckdb")
+                        if (
+                            len(views) != 1
+                            or sqlglot.parse_one(views[0][0], read="duckdb").expression != expected
+                        ):
+                            raise ValueError("source view is not the audited candidate projection")
+                        for field in table["columns"]:
+                            if field["column_id"] in source_policy["fields"]:
+                                proof = source_policy["fields"][field["column_id"]]
+                                if field["sql_type"] != proof["sql_type"]:
+                                    raise ValueError("source field SQL type disagrees with audit")
+                                field["role"] = proof["role"]
+                    elif projection.get("kind") == "source_fields":
+                        raise ValueError("source projection is missing its persisted policy")
                     source_descriptors = []
                     for source in sources:
                         profile = profiles[source]
+                        if source_policy is not None:
+                            from datamate.preparation.models import TableProfile
+
+                            if (
+                                TableProfile.model_validate_json(json.dumps(profile)).digest
+                                != source_policy["profile_digest"]
+                            ):
+                                raise ValueError("source catalog profile disagrees with audit")
                         digest = profile.get("source_sha256", "")
                         if (
                             not profile.get("source")
@@ -286,6 +330,22 @@ class StructuredTools:
                             ),
                         },
                     )
+                    if source_policy is not None:
+                        table["_source_fields"] = source_policy["fields"]
+                        table["policy"].update(
+                            {
+                                key: source_policy[key]
+                                for key in (
+                                    "kind",
+                                    "coverage",
+                                    "declared_data_rows",
+                                    "withheld_fields",
+                                    "joins",
+                                    "measure_qualification",
+                                )
+                            }
+                        )
+                        table["policy"]["completeness"] = "single_source_table_observations"
                     if table["table_id"] in relations:
                         raise ValueError("duplicate qualified relation")
                     relations[table["table_id"]] = table
@@ -387,17 +447,121 @@ class StructuredTools:
             )
             if any(query.find_all(exp.TableColumn)):
                 raise ValueError("whole-row access outside qualified columns")
+            self._validate_source_query(query)
             return query.sql(dialect="duckdb")
         except sqlglot.errors.SqlglotError as error:
             raise ValueError("column outside qualified projection") from error
 
+    def _validate_source_query(self, query) -> None:
+        tables = list(query.find_all(exp.Table))
+        source_tables = [
+            table
+            for table in tables
+            if self._relations.get(_table_id(table), {}).get("policy", {}).get("kind")
+            == "source_fields"
+        ]
+        if not source_tables:
+            return
+        if (
+            len(tables) != 1
+            or len(list(query.find_all(exp.Select))) != 1
+            or any(
+                query.find_all(
+                    exp.Join,
+                    exp.CTE,
+                    exp.Subquery,
+                    exp.Window,
+                    exp.SetOperation,
+                    exp.Cast,
+                    exp.Case,
+                    exp.If,
+                )
+            )
+        ):
+            raise ValueError(
+                "source fields require a single-source SELECT; joins/casts/nesting denied"
+            )
+        if any(query.find_all(exp.Add, exp.Sub, exp.Mul, exp.Div, exp.Mod, exp.Pow, exp.IntDiv)):
+            raise ValueError("source arithmetic requires a separately audited measure")
+        table = self._relations[_table_id(source_tables[0])]
+        fields = table["_source_fields"]
+        units = {column for column, field in fields.items() if field["role"] == "unit"}
+        groups = query.args.get("group")
+        grouped = (
+            set()
+            if groups is None
+            else {item.name for item in groups.expressions if isinstance(item, exp.Column)}
+        )
+
+        def single_unit_filter(node):
+            if isinstance(node, exp.Paren):
+                return single_unit_filter(node.this)
+            if isinstance(node, exp.And):
+                return single_unit_filter(node.left) or single_unit_filter(node.right)
+            if not isinstance(node, exp.EQ):
+                return False
+            return any(
+                isinstance(column, exp.Column)
+                and column.name in units
+                and isinstance(value, exp.Literal)
+                and value.is_string
+                for column, value in ((node.left, node.right), (node.right, node.left))
+            )
+
+        where = query.args.get("where")
+        unit_scoped = len(units) == 1 and (
+            bool(units & grouped) or (where is not None and single_unit_filter(where.this))
+        )
+        for aggregate in query.find_all(exp.AggFunc):
+            if isinstance(aggregate, exp.Count):
+                continue
+            if not isinstance(aggregate, (exp.Sum, exp.Avg, exp.Min, exp.Max)):
+                raise ValueError("unsupported source aggregate")
+            argument = aggregate.this
+            if isinstance(argument, exp.Distinct) and len(argument.expressions) == 1:
+                argument = argument.expressions[0]
+            if not isinstance(argument, exp.Column) or argument.name not in fields:
+                raise ValueError("source aggregates require a directly qualified numeric field")
+            role = fields[argument.name]["role"]
+            from datamate.preparation.source_fields import NUMERIC_ROLES
+
+            if role not in NUMERIC_ROLES:
+                raise ValueError("text fields cannot become numeric source measures")
+            if role in {"unit_price", "unit_cost", "unit_factor"} or role.endswith("_percent"):
+                raise ValueError("source price, factor or percentage aggregation is unqualified")
+            if role in {"quantity", "inventory_quantity"} and not unit_scoped:
+                raise ValueError("source quantity aggregate requires recorded-unit grouping/filter")
+
     def list_tables(self) -> list[dict]:
         """List qualified SQL relation IDs, complete factual scopes, and provenance."""
         if self._qualified:
-            return [
-                {key: deepcopy(value) for key, value in table.items() if key != "columns"}
-                for table in self._relations.values()
-            ]
+            result = []
+            for table in self._relations.values():
+                summary = {
+                    key: deepcopy(value)
+                    for key, value in table.items()
+                    if key != "columns" and not key.startswith("_")
+                }
+                if table["policy"].get("kind") == "source_fields":
+                    summary["policy"] = {
+                        key: table["policy"][key]
+                        for key in (
+                            "qualification",
+                            "completeness",
+                            "measure_qualification",
+                            "joins",
+                        )
+                    }
+                    summary["sources"] = [
+                        {
+                            key: value
+                            for key, value in source.items()
+                            if key in {"source", "source_table", "source_table_display"}
+                        }
+                        for source in table["sources"]
+                    ]
+                result.append(summary)
+            return result
         return [
             {
                 "table_id": t["table_id"],
@@ -413,7 +577,11 @@ class StructuredTools:
         if self._qualified:
             if table_id not in self._relations:
                 raise ValueError("unknown qualified table")
-            return deepcopy(self._relations[table_id])
+            return {
+                key: deepcopy(value)
+                for key, value in self._relations[table_id].items()
+                if not key.startswith("_")
+            }
         for table in [*self.catalog["tables"], self.catalog.get("calendar", {})]:
             if table.get("table_id") == table_id:
                 return {

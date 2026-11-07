@@ -382,6 +382,9 @@ def project_facts(
         descriptors.append(
             _materialize(db, scope, required, rows, blocked, source_tables, bindings.digest)
         )
+    from datamate.preparation.source_fields import project_source_fields
+
+    descriptors.extend(project_source_fields(db, bindings))
     return ProjectionResult(tuple(descriptors), bindings.digest)
 
 
@@ -403,11 +406,14 @@ def publish_projections(
     ).fetchall()
     published = []
     allowed = {scope for scope, _ in _SCOPES.values()}
+    from datamate.preparation.source_fields import source_metadata, source_view_sql
+
     for scope, table_name, columns_json, blocked_json, count, bindings_digest in descriptors:
         if qualification.status(scope) != "READY":
             continue
+        source = source_metadata(db, scope)
         if (
-            scope not in allowed
+            (scope not in allowed and source is None)
             or table_name != "candidate_" + scope
             or json.loads(blocked_json)
             or bindings_digest != report.bindings_digest
@@ -415,6 +421,9 @@ def publish_projections(
         ):
             raise ValueError("qualification descriptor is incomplete")
         columns = tuple(json.loads(columns_json))
-        db.execute(f'CREATE TABLE clean."{scope}" AS SELECT * FROM meta."{table_name}"')
+        if source is not None:
+            db.execute(f'CREATE VIEW clean."{scope}" AS ' + source_view_sql(scope, columns))
+        else:
+            db.execute(f'CREATE TABLE clean."{scope}" AS SELECT * FROM meta."{table_name}"')
         published.append(PublishedProjection(scope, scope, columns, count))
     return tuple(published)

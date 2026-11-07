@@ -450,3 +450,18 @@ percent points from native Excel ratio formats; unsupported formats stay unresol
 An optional registered line-amount formula requires an exact source declaration,
 matching quantity/price units and explicit discount dependencies. Its separate
 `derived_line_net_amount` never overwrites an observed amount and performs no rounding.
+
+Qualified source observations can now publish independently of the nine canonical
+business scopes. Each source projection retains its complete source-row denominator
+and withholds an uncertain field in full. Missing product identity therefore does
+not hide unrelated audited names/quantities, and cannot authorize a JOIN. SQL on
+these source projections currently supports a single-source SELECT with no joins,
+CTEs, subqueries, window operations, casts or arithmetic. Quantity aggregation
+requires grouping by the recorded unit or filtering one explicit string unit;
+parameterized unit filters require grouping. Prices/costs with unknown unit basis
+cannot be aggregated. Source observations do not qualify official revenue or
+whole-business/time coverage. Raw values and source/projection lineage stay separate;
+persisted receipts and exact view definitions reject post-audit changes.
+
+Current evidence and the blocked sales-sheet canary are recorded in the
+[source-field report](docs/engineering/qualified_source_fields_report.md).

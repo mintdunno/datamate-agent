@@ -542,12 +542,31 @@ def _published_metadata(db, projection) -> dict:
         "WHERE table_schema='clean' AND table_name=? ORDER BY ordinal_position",
         [projection.table_name],
     ).fetchall()
-    return asdict(projection) | {
-        "columns": [name for name, _ in columns],
-        "column_metadata": {name: {"sql_type": kind, "header": name} for name, kind in columns},
-        "source_tables": json.loads(source_tables[0]),
-        "provenance_columns": ["fact_id", "table_id"],
-    }
+    from datamate.preparation.source_fields import source_metadata
+
+    source = source_metadata(db, projection.scope)
+    extra = (
+        {}
+        if source is None
+        else {
+            "kind": "source_fields",
+            "source_field_policy": source,
+        }
+    )
+    return (
+        asdict(projection)
+        | extra
+        | {
+            "columns": [name for name, _ in columns],
+            "column_metadata": {
+                name: {"sql_type": kind, "header": name}
+                | ((source or {}).get("fields", {}).get(name, {}))
+                for name, kind in columns
+            },
+            "source_tables": json.loads(source_tables[0]),
+            "provenance_columns": ["fact_id", "table_id"],
+        }
+    )
 
 
 def _build(workspace: Path, *, inputs: BusinessInputs, policy: PreparationPolicy) -> dict:

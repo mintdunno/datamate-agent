@@ -57,7 +57,8 @@ def _optional_tables(db: DuckDBPyConnection) -> tuple[str, ...]:
         row[0]
         for row in db.execute(
             "SELECT table_name FROM information_schema.tables WHERE table_schema='meta' "
-            "AND table_name IN ('bindings','transform_events','text_integrity') ORDER BY table_name"
+            "AND table_name IN ('bindings','transform_events','text_integrity','profiles',"
+            "'source_field_descriptors') ORDER BY table_name"
         ).fetchall()
     )
 
@@ -69,7 +70,13 @@ def _state_digest(db: DuckDBPyConnection) -> str:
         "WHERE table_name IS NOT NULL ORDER BY scope"
     ).fetchall()
     allowed = {item[0] for item in _SCOPES.values()}
-    if any(scope not in allowed or name != "candidate_" + scope for scope, name in candidates):
+    from datamate.preparation.source_fields import source_metadata
+
+    if any(
+        (scope not in allowed and source_metadata(db, scope) is None)
+        or name != "candidate_" + scope
+        for scope, name in candidates
+    ):
         raise ValueError("unknown candidate table in audit state")
     tables = (
         *_STATE_TABLES,
@@ -642,6 +649,10 @@ def audit_prepared(db: DuckDBPyConnection, bindings: SemanticBindings) -> AuditR
         findings.append(_source_numeric(db, scope, table_name, columns))
         if "quantity_base" in columns:
             findings.append(_source_unit_conversion(db, scope, table_name, bindings))
+    from datamate.preparation.source_fields import audit_derived_amounts, audit_source_fields
+
+    findings.extend(audit_source_fields(db, bindings, text_issues))
+    findings.extend(audit_derived_amounts(db, bindings))
     frozen = tuple(findings)
     state_digest = _state_digest(db)
     report_digest = _report_digest(frozen, state_digest, bindings.digest, data_count)
