@@ -190,6 +190,12 @@ async def prepare_with_recovery(
         )
         clauses = compile_clauses(inputs.documents, split_id=split_id)
         full_bindings = _source_roles(profiles, clauses, policy.binding_proposals)
+        from datamate.preparation.native_relations import enrich_native_relations
+
+        with duckdb.connect(str(baseline.database), read_only=True) as source_db:
+            full_bindings = enrich_native_relations(
+                source_db, profiles, full_bindings, record_issues=False
+            )
         if full_bindings.digest != baseline.catalog["bindings_digest"]:
             raise ValueError("source bindings changed after registry preparation")
         if issue.scope not in full_bindings.table_ids:
@@ -411,6 +417,10 @@ async def prepare_with_mapping_recovery(
         )
         clauses = compile_clauses(inputs.documents, split_id=split_id)
         bindings = _source_roles(profiles, clauses, policy.binding_proposals)
+        from datamate.preparation.native_relations import enrich_native_relations
+
+        with duckdb.connect(str(baseline.database), read_only=True) as source_db:
+            bindings = enrich_native_relations(source_db, profiles, bindings, record_issues=False)
         if bindings.digest != baseline.catalog["bindings_digest"]:
             raise ValueError("source bindings changed after registry preparation")
         issues = tuple(

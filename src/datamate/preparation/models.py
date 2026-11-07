@@ -5,6 +5,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from decimal import Decimal
+from functools import cached_property
 from hashlib import sha256
 from pathlib import Path
 from typing import Literal, Self
@@ -446,6 +447,11 @@ class SemanticBindings:
     qualified_measures: tuple[tuple[str, str, str], ...] = ()
     validator_version: str = BINDING_VALIDATOR_VERSION
     profile_sources: tuple[tuple[str, str, str, str], ...] = ()
+
+    @cached_property
+    def native_entry_index(self) -> dict[int, ResolvedBinding]:
+        # entries retain immutable bindings, so object IDs cannot be reused in this index.
+        return {id(entry.binding): entry for entry in self.entries}
 
     @property
     def digest(self) -> str:

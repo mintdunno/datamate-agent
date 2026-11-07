@@ -255,6 +255,7 @@ class OperationState:
         self.binding_entries = {}
         self.source_clauses = ()
         self._unit_contexts = {}
+        self._entity_contexts = {}
         self._step_ids = {}
         validate_plan(plan, bindings)
         self._authorized = frozenset(step.step_id for step in plan.steps)
@@ -326,6 +327,9 @@ class OperationState:
         from datamate.preparation.text_state import apply_text_to_batch
 
         apply_text_to_batch(self, batch)
+        # Identity uses original values plus independently accepted Unicode repairs.
+        # Later trim/case operations cannot manufacture a join-key proof.
+        self._source_values = {record: dict(values) for record, values in self.cells.items()}
 
 
 def classify_structure(
@@ -706,64 +710,96 @@ def _resolve_entities(
     output = "entity_id_" + column
     # Inspect every declaration in this table/scope, including conflicting candidates;
     # selecting a smaller binding list must not hide a contradictory source map.
-    proposals = tuple(
-        e.binding
-        for e in state.bindings.entries
-        if e.binding.kind == "entity"
-        and e.binding.table_id == step.table_id
-        and e.binding.entity_scope == operation.scope
-    )
-    graph = accept_entity_links(proposals, state.bindings)
-    components = {
-        key: nodes for scope, nodes in graph.components if scope == operation.scope for key in nodes
-    }
-    blocked = set()
-    for conflict in graph.conflicts:
-        for key in (conflict.value, conflict.entity_target):
-            blocked.update(components.get(key, (key,)))
-    declared = {key for _, key, _ in graph.aliases}
-    declared.update(components)
-    authorized = {i for i in step.binding_ids}
+    identifier = state.step_identifier(step)
+    if identifier not in state._entity_contexts:
+        proposals = tuple(
+            e.binding
+            for e in state.bindings.entries
+            if e.binding.kind == "entity"
+            and e.binding.table_id == step.table_id
+            and e.binding.entity_scope == operation.scope
+        )
+        graph = accept_entity_links(proposals, state.bindings)
+        components = {
+            key: nodes
+            for scope, nodes in graph.components
+            if scope == operation.scope
+            for key in nodes
+        }
+        blocked = set()
+        for conflict in graph.conflicts:
+            for key in (conflict.value, conflict.entity_target):
+                blocked.update(components.get(key, (key,)))
+        declared = {key for _, key, _ in graph.aliases}
+        declared.update(components)
+        authorized = set(step.binding_ids)
+        alias_keys = defaultdict(set)
+        alias_bindings = defaultdict(list)
+        link_bindings = defaultdict(list)
+        approved_aliases = set(graph.aliases)
+        for scope, key, name in graph.aliases:
+            if scope == operation.scope:
+                alias_keys[name].add(key)
+        for binding in proposals:
+            if (
+                binding.entity_relation == "alias"
+                and (operation.scope, binding.value, binding.entity_target) in approved_aliases
+            ):
+                alias_bindings[(binding.value, binding.entity_target)].append(binding)
+        for binding in graph.accepted_links:
+            link_bindings[binding.value].append(binding)
+        state._entity_contexts[identifier] = (
+            components,
+            blocked,
+            declared,
+            authorized,
+            set(graph.ambiguous_aliases),
+            alias_keys,
+            alias_bindings,
+            link_bindings,
+        )
+    (
+        components,
+        blocked,
+        declared,
+        authorized,
+        ambiguous,
+        alias_keys,
+        alias_bindings,
+        link_bindings,
+    ) = state._entity_contexts[identifier]
     for record in batch:
         if state.dispositions[record.record_id].kind != "retained":
             continue
-        before = record.source.values[int(column[1:]) - 1]
+        before = state._source_values[record.record_id].get(column)
         key = None
         if type(before) is str and before == before.strip() and before:
             if operation.input_kind == "id":
                 candidate = operation.namespace + ":" + before
                 if candidate in declared:
                     key = candidate
-            elif (operation.scope, before) not in graph.ambiguous_aliases:
+            elif (operation.scope, before) not in ambiguous:
                 candidates = {
                     key
-                    for scope, key, name in graph.aliases
-                    if scope == operation.scope
-                    and name == before
-                    and key.partition(":")[0] == operation.namespace
+                    for key in alias_keys.get(before, ())
+                    if key.partition(":")[0] == operation.namespace
                 }
                 canonical = {min(components.get(key, (key,))) for key in candidates}
                 if len(canonical) == 1:
                     key = next(iter(candidates))
         supported = key is not None and key not in blocked
         component = set(components.get(key, (key,))) if key else set()
-        required = [b for b in graph.accepted_links if b.value in component]
+        required = [binding for node in component for binding in link_bindings.get(node, ())]
         if operation.input_kind == "alias":
             required.extend(
-                b
-                for b in proposals
-                if b.entity_relation == "alias"
-                and b.value in component
-                and b.entity_target == before
-                and (operation.scope, b.value, before) in graph.aliases
+                binding for node in component for binding in alias_bindings.get((node, before), ())
             )
         elif not required:
             required.extend(
-                b
-                for b in proposals
-                if b.entity_relation == "alias"
-                and b.value == key
-                and (operation.scope, key, b.entity_target) in graph.aliases
+                binding
+                for (node, _), entries in alias_bindings.items()
+                if node == key
+                for binding in entries
             )
         supported = (
             supported and bool(required) and all(b.binding_id in authorized for b in required)
@@ -771,6 +807,30 @@ def _resolve_entities(
         after = min(component) if supported else None
         if supported:
             _derived_value(record, output, after, (column,), step, state)
+            from datamate.preparation.native_relations import has_native_proof
+
+            native = [b for b in required if has_native_proof(b, state.bindings)]
+            if operation.scope == "product" and operation.namespace == "product" and native:
+                source_codes = {
+                    b.value.partition(":")[2] for b in native if b.value.startswith("product:")
+                }
+                if len(source_codes) != 1:
+                    raise ValueError("native product identity is ambiguous")
+                _derived_value(
+                    record, "product_id", next(iter(source_codes)), (column,), step, state
+                )
+                for binding in native:
+                    for ref in binding.evidence:
+                        if ref.locator.startswith("raw:"):
+                            source_record, source_column = ref.locator[4:].rsplit("/", 1)
+                            state.extra_lineage.append(
+                                LineageEdge(
+                                    "row:" + record.record_id,
+                                    source_record,
+                                    source_column,
+                                    state.step_identifier(step),
+                                )
+                            )
         state.events.append(
             TransformEvent(
                 record.record_id,
@@ -828,8 +888,8 @@ def _normalize_quantity(
         after = None
         reason = "quantity lacks current product-scoped unit proof"
         try:
-            product = cells.get(operation.product_column)
-            unit = cells.get(operation.unit_column)
+            product = state._source_values[record.record_id].get(operation.product_column)
+            unit = state._source_values[record.record_id].get(operation.unit_column)
             if type(product) is not str or type(unit) is not str:
                 raise ValueError(reason)
             context = contexts.get(product)

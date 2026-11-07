@@ -388,3 +388,18 @@ are cached only inside the authorized operation state, never as model answers.
 
 These receipts do not qualify an entire business or automatically establish source grain,
 complete product linkage, temporal applicability, or query-time measure semantics.
+
+
+Native catalog identity can derive a product code from an exact, unique name/code
+source row without changing the original name. The exported product code stays in
+the catalog namespace even when other explicit namespace mappings exist. A source-backed
+named order-line grain can then publish a qualified projection. When every projected
+row has a verified unit conversion, SQL also exposes `quantity_base` and
+`quantity_base_unit`, alongside original `quantity`, `unit` and product names where
+available. An incomplete product join cannot publish filtered partial order totals.
+
+The audit reconstructs native relation receipts from raw rows, independently compares
+derived product codes, and checks base quantities against source quantities and unit
+proofs. Plain signed integer text is independently checked without locale guessing;
+other textual numeric representations still require supported independent evidence.
+Absence of base quantity columns means complete base-unit totals remain unavailable.

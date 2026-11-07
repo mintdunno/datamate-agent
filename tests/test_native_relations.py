@@ -244,3 +244,107 @@ def test_unsupported_conditional_source_blocks_only_its_product_dependencies(tmp
     rows = facts(prepare(root, tmp_path))
     assert rows[0].get("quantity_base") is None
     assert rows[1].get("quantity_base") == 12
+
+
+def test_proven_name_to_code_link_produces_qualified_sql_with_source_and_base_units(tmp_path):
+    from datamate.runtime.tools import StructuredTools
+
+    root = native_world(tmp_path, names_only=True)
+    result = prepare(root, tmp_path)
+    rows = facts(result)
+    assert [row.get("product_id") for row in rows] == ["P1", "P2"]
+    assert [row["c0002"] for row in rows] == ["Alpha", "Beta"]
+    assert result.catalog["qualification"]["order_lines"] == "READY"
+    tools = StructuredTools(result.database, result.catalog)
+    response = tools.execute_sql(
+        "SELECT product_id,quantity,unit,quantity_base,quantity_base_unit "
+        "FROM clean.order_lines ORDER BY product_id"
+    )
+    assert response["rows"] == [["P1", "1", "vỉ", "12", "viên"], ["P2", "2", "hộp", "12", "cái"]]
+
+
+def test_missing_product_link_cannot_publish_filtered_partial_order_totals(tmp_path):
+    from datamate.runtime.tools import StructuredTools
+
+    root = native_world(tmp_path, names_only=True)
+    path = root / "data/shop/sales.csv"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("O1,Alpha", "O1,Unknown"), encoding="utf-8"
+    )
+    result = prepare(root, tmp_path)
+    assert facts(result)[0].get("product_id") is None
+    assert result.catalog["qualification"]["order_lines"] != "READY"
+    with pytest.raises(ValueError):
+        StructuredTools(result.database, result.catalog).execute_sql(
+            "SELECT SUM(line_net_amount) FROM clean.order_lines WHERE product_id='P2'"
+        )
+
+
+def _current_bindings(root, result, db):
+    from datamate.preparation.catalog import compile_clauses
+    from datamate.preparation.discovery import discover_business
+    from datamate.preparation.models import TableProfile
+    from datamate.preparation.native_relations import enrich_native_relations
+    from datamate.preparation.v2 import _source_roles
+
+    profiles = tuple(
+        TableProfile.model_validate_json(json.dumps(row)) for row in result.catalog["tables"]
+    )
+    clauses = compile_clauses(
+        discover_business(root, "shop", split_id="train").documents, split_id="train"
+    )
+    base = _source_roles(profiles, clauses, ())
+    return enrich_native_relations(db, profiles, base, record_issues=False)
+
+
+def test_independent_audit_rejects_tampered_derived_product_code(tmp_path):
+    from datamate.preparation.audit import audit_prepared
+
+    root = native_world(tmp_path, names_only=True)
+    result = prepare(root, tmp_path)
+    with duckdb.connect(str(result.database)) as db:
+        bindings = _current_bindings(root, result, db)
+        db.execute("UPDATE meta.candidate_order_lines SET product_id='WRONG' WHERE product_id='P1'")
+        report = audit_prepared(db, bindings)
+    assert any(
+        f.status == "FAIL" and f.check_id == "source_product_identity" for f in report.findings
+    )
+
+
+def test_independent_audit_rebuilds_native_factor_proof_from_raw_rows(tmp_path):
+    from dataclasses import replace
+
+    from datamate.preparation.audit import _native_relations_audit
+
+    root = native_world(tmp_path, names_only=True)
+    result = prepare(root, tmp_path)
+    with duckdb.connect(str(result.database), read_only=True) as db:
+        bindings = _current_bindings(root, result, db)
+        changed = tuple(
+            replace(e, binding=e.binding.model_copy(update={"unit_factor": Decimal(99)}))
+            if e.binding.kind == "unit" and e.binding.unit_factor
+            else e
+            for e in bindings.entries
+        )
+        finding = _native_relations_audit(db, replace(bindings, entries=changed))
+    assert finding.status == "FAIL"
+
+
+def test_mapping_recovery_reconstructs_native_receipts_without_mutating_artifact(tmp_path):
+    import asyncio
+
+    from datamate.preparation.orchestration import prepare_with_mapping_recovery
+
+    root = native_world(tmp_path, names_only=True)
+    result = asyncio.run(
+        prepare_with_mapping_recovery(
+            root,
+            "shop",
+            tmp_path / "cache",
+            split_id="train",
+            run_dir=tmp_path / "mapping",
+            allow_model_calls=False,
+        )
+    )
+    assert result.status == "NO_MAPPING_ISSUE"
+    assert result.prepared.catalog["qualification"]["order_lines"] == "READY"

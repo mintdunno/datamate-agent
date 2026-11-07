@@ -23,7 +23,7 @@ NATIVE_RELATION_VERSION = "source-row-relations-v1"
 
 def has_native_proof(binding: Binding, bindings: SemanticBindings) -> bool:
     """Only locally compiled entries may use row evidence instead of literal clauses."""
-    entry = next((e for e in bindings.entries if e.binding == binding), None)
+    entry = bindings.native_entry_index.get(id(binding))
     if (
         entry is None
         or entry.status != "ACCEPTED"
@@ -104,7 +104,11 @@ def _evidence(profile, record, roles):
 
 
 def enrich_native_relations(
-    db: DuckDBPyConnection, profiles: Sequence[TableProfile], bindings: SemanticBindings
+    db: DuckDBPyConnection,
+    profiles: Sequence[TableProfile],
+    bindings: SemanticBindings,
+    *,
+    record_issues: bool = True,
 ) -> SemanticBindings:
     """Derive exact-key, product-scoped relations; duplicate domains stay unresolved."""
     roles = {p.table_id: _roles(bindings, p.table_id) for p in profiles}
@@ -178,6 +182,58 @@ def enrich_native_relations(
         quantity = r.get("quantity") or r.get("inventory_quantity")
         if product is None or quantity is None or "unit" not in r or "unit_factor" in r:
             continue
+        local_aliases = []
+        if product.value == "product_name":
+            for name, witnesses in names.items():
+                if len(witnesses) != 1 or len(products[witnesses[0][0]]) != 1:
+                    continue
+                code, _, _, evidence = witnesses[0]
+                alias = Binding(
+                    kind="entity",
+                    table_id=profile.table_id,
+                    columns=product.columns,
+                    value="product:" + code,
+                    profile_digest=profile.digest,
+                    evidence=tuple(dict.fromkeys((*product.evidence, *evidence))),
+                    dependencies=(product.binding_id,),
+                    entity_scope="product",
+                    entity_relation="alias",
+                    entity_target=name,
+                )
+                local_aliases.append(
+                    ResolvedBinding(
+                        alias,
+                        "ACCEPTED",
+                        "unique native product row",
+                        acceptance_rule=NATIVE_RELATION_VERSION,
+                    )
+                )
+            additions.extend(local_aliases)
+            grain_roles = {"order_id", "quantity", "line_net_amount", "product_name"}
+            has_grain = any(
+                b.kind == "grain" and b.table_id == profile.table_id and b.value == "order_line"
+                for b in bindings.accepted
+            )
+            if local_aliases and grain_roles <= r.keys() and not has_grain:
+                fields = [r[role] for role in sorted(grain_roles)]
+                grain = Binding(
+                    kind="grain",
+                    table_id=profile.table_id,
+                    columns=tuple(c.column_id for c in profile.columns),
+                    value="order_line",
+                    profile_digest=profile.digest,
+                    dependencies=tuple(b.binding_id for b in fields)
+                    + tuple(e.binding.binding_id for e in local_aliases),
+                    evidence=tuple(dict.fromkeys(e for b in fields for e in b.evidence)),
+                )
+                additions.append(
+                    ResolvedBinding(
+                        grain,
+                        "ACCEPTED",
+                        "source roles and native product identity",
+                        acceptance_rule=NATIVE_RELATION_VERSION,
+                    )
+                )
         unit_role = r["unit"]
         dependencies = (product.binding_id, quantity.binding_id, unit_role.binding_id)
         target_evidence = tuple(
@@ -284,12 +340,13 @@ def enrich_native_relations(
                 )
                 for b in declarations
             )
-    db.execute(
-        "CREATE TABLE meta.source_relation_issues("
-        "table_id VARCHAR,source_key VARCHAR,reason VARCHAR)"
-    )
-    if issues:
-        db.executemany(
-            "INSERT INTO meta.source_relation_issues VALUES (?,?,?)", sorted(set(issues))
+    if record_issues:
+        db.execute(
+            "CREATE TABLE meta.source_relation_issues("
+            "table_id VARCHAR,source_key VARCHAR,reason VARCHAR)"
         )
+        if issues:
+            db.executemany(
+                "INSERT INTO meta.source_relation_issues VALUES (?,?,?)", sorted(set(issues))
+            )
     return replace(bindings, entries=(*bindings.entries, *additions))

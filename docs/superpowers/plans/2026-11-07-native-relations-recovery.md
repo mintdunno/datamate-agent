@@ -39,10 +39,10 @@ Interface: enrich_native_relations(db, profiles, bindings) -> SemanticBindings, 
 ## Task 2 — Derived facts and SQL qualification
 
 Files: operations.py, v2.py, projection.py, audit.py as required; qualified-runtime regressions.
-- [ ] Test proven name-to-code linkage and source/base quantity separation; reject missing/ambiguous linkage and double conversion.
-- [ ] Register only validated dependent operations and expose supported facts with complete provenance; preserve unresolved scope blocking.
-- [ ] Verify usable qualified projection and forbidden access/partial-total refusals.
-- [ ] Run focused checks and commit the independently verified unit.
+- [x] Test proven name-to-code linkage and source/base quantity separation; reject missing/ambiguous linkage and double conversion.
+- [x] Register only validated dependent operations and expose supported facts with complete provenance; preserve unresolved scope blocking.
+- [x] Verify usable qualified projection and forbidden access/partial-total refusals.
+- [x] Run focused checks and commit the independently verified unit.
 
 ## Task 3 — Bounded business recovery
 

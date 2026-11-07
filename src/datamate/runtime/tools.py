@@ -358,6 +358,16 @@ class StructuredTools:
                 for column in columns
             ],
             "provenance_columns": list(provenance),
+            "quantity_semantics": {
+                "quantity": "Original source-row quantity; respect its unit and product scope.",
+                "quantity_base": (
+                    "Verified base quantities for all projected rows; respect quantity_base_unit."
+                    if "quantity_base" in columns
+                    else "Unavailable; do not infer factors or complete base-unit totals."
+                ),
+            }
+            if "quantity" in columns
+            else {},
         }
 
     def _qualified_sql(self, sql: str) -> str:

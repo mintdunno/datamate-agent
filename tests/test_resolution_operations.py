@@ -538,3 +538,95 @@ def test_unit_resolutions_are_cached_across_batches_with_many_products(tmp_path,
             assert execute_batch((record,), step, state).facts[0].values["quantity_base"] == 2
     assert len(calls) == 1
     assert len(hashes) < 20
+
+
+def test_entity_graph_is_compiled_once_across_batches(tmp_path, monkeypatch):
+    from datamate.preparation import operations
+
+    db, table, _, _, bindings, batch = world(
+        tmp_path,
+        ["entity_alias[product]: sales:A = Shirt"],
+        [("Shirt", 1, "can", None)] * 12,
+        headers=("product_name", "quantity", "unit", "quantity_base"),
+    )
+    calls = []
+    original = operations.accept_entity_links
+
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(operations, "accept_entity_links", counted)
+    operation = {
+        "name": "resolve_entities",
+        "columns": ("c0001",),
+        "scope": "product",
+        "namespace": "sales",
+        "input_kind": "alias",
+    }
+    step = step_for(table, bindings, operation)
+    plan = CleaningPlan(
+        bindings_digest=bindings.digest, profile_digests=bindings.profile_digests, steps=(step,)
+    )
+    with db, OperationState(db, table.table_id) as state:
+        state.authorize(plan, bindings)
+        for record in batch:
+            assert (
+                execute_batch((record,), step, state).facts[0].values["entity_id_c0001"]
+                == "sales:A"
+            )
+    assert len(calls) == 1
+
+
+def test_native_product_id_retains_catalog_namespace_after_explicit_cross_map(tmp_path):
+    from datamate.preparation.models import ResolvedBinding
+    from datamate.preparation.native_relations import NATIVE_RELATION_VERSION
+
+    db, table, roles, _, bindings, batch = world(
+        tmp_path,
+        ["entity_map[product]: product:P1 = legacy:L9"],
+        [("Alpha", 1, "can", None)],
+        headers=("product_name", "quantity", "unit", "quantity_base"),
+    )
+    alias = Binding(
+        kind="entity",
+        table_id=table.table_id,
+        columns=("c0001",),
+        value="product:P1",
+        profile_digest=roles[0].profile_digest,
+        evidence=(
+            EvidenceRef(source="data/shop/sales.csv", sha256="a" * 64, locator="raw:r0/c0001"),
+        ),
+        dependencies=(roles[0].binding_id,),
+        entity_scope="product",
+        entity_relation="alias",
+        entity_target="Alpha",
+    )
+    bindings = replace(
+        bindings,
+        entries=(
+            *bindings.entries,
+            ResolvedBinding(
+                alias,
+                "ACCEPTED",
+                "trusted test source row",
+                acceptance_rule=NATIVE_RELATION_VERSION,
+            ),
+        ),
+    )
+    with db:
+        result = run(
+            db,
+            table,
+            bindings,
+            batch,
+            {
+                "name": "resolve_entities",
+                "columns": ("c0001",),
+                "scope": "product",
+                "namespace": "product",
+                "input_kind": "alias",
+            },
+        )
+    assert result.facts[0].values["entity_id_c0001"] == "legacy:L9"
+    assert result.facts[0].values["product_id"] == "P1"

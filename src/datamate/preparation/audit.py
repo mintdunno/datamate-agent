@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 from dataclasses import asdict, dataclass
 from decimal import Decimal
 from typing import Literal
@@ -346,7 +347,7 @@ def _field_lineage(
 def _source_numeric(
     db: DuckDBPyConnection, scope: str, table_name: str, columns: tuple[str, ...]
 ) -> AuditFinding:
-    numeric = [role for role in columns if role in _NUMERIC]
+    numeric = [role for role in columns if role in _NUMERIC and role != "quantity_base"]
     if not numeric:
         return AuditFinding(
             "source_numeric", scope, "NOT_APPLICABLE", "trusted schema has no numeric fields"
@@ -369,7 +370,8 @@ def _source_numeric(
                     mismatch += 1
                     continue
                 raw = values_source[columns_source.index(column_id)]
-                if raw["type"] not in ("int", "Decimal"):
+                integer_text = raw["type"] == "str" and re.fullmatch(r"[+-]?[0-9]+", raw["value"])
+                if raw["type"] not in ("int", "Decimal") and not integer_text:
                     unknown += 1
                     continue
                 checked += 1
@@ -392,6 +394,168 @@ def _source_numeric(
     )
 
 
+def _source_unit_conversion(db, scope, table_name, bindings):
+    from dataclasses import replace
+    from decimal import localcontext
+
+    from datamate.preparation.catalog import resolve_units
+    from datamate.preparation.native_relations import _roles
+    from datamate.preparation.storage import _decoded
+    from datamate.preparation.text_state import effective_values
+
+    roles = {t: _roles(bindings, t) for t in bindings.table_ids}
+    contexts = {}
+    resolutions = {}
+    checked = unknown = mismatch = 0
+    rows = db.execute(
+        f"SELECT c.quantity_base,c.quantity_base_unit,c.table_id,p.record_id,r.values_json "
+        f'FROM meta."{table_name}" c JOIN meta.projection_lineage p '
+        "ON p.fact_id=c.fact_id AND p.scope=? AND p.role='quantity_base' "
+        "JOIN staging.raw_rows r ON r.record_id=p.record_id",
+        [scope],
+    ).fetchall()
+    for quantity, base, table, record, raw_json in rows:
+        r = roles[table]
+        product = r.get("product_id") or r.get("product_name")
+        if product is None or "quantity" not in r or "unit" not in r:
+            unknown += 1
+            continue
+        values = effective_values(db, record, tuple(_decoded(v) for v in json.loads(raw_json)))
+
+        def cell(binding, values=values):
+            return values[int(binding.columns[0][1:]) - 1]
+
+        value = cell(r["quantity"])
+        if type(value) is str and re.fullmatch(r"[+-]?[0-9]+", value):
+            value = Decimal(value)
+        elif type(value) is int:
+            value = Decimal(value)
+        if not isinstance(value, Decimal):
+            unknown += 1
+            continue
+        key = (table, cell(product), cell(r["unit"]))
+        if key not in resolutions:
+            context = contexts.setdefault(
+                (table, key[1]),
+                replace(
+                    bindings,
+                    entries=tuple(
+                        e
+                        for e in bindings.entries
+                        if e.binding.table_id == table
+                        and e.binding.kind == "unit"
+                        and e.binding.unit_product == key[1]
+                    ),
+                ),
+            )
+            resolutions[key] = resolve_units(context, product_id=key[1], unit=key[2])
+        result = resolutions[key]
+        if result.status != "ACCEPTED":
+            unknown += 1
+            continue
+        checked += 1
+        with localcontext() as context:
+            context.prec = 100
+            mismatch += quantity != value * result.factor or base != result.base_unit
+    status = "FAIL" if mismatch else "UNRESOLVED" if unknown or not checked else "PASS"
+    return AuditFinding(
+        "source_unit_conversion",
+        scope,
+        status,
+        f"checked={checked}; unknown={unknown}; mismatch={mismatch}",
+    )
+
+
+def _native_relations_audit(db, bindings):
+    from dataclasses import replace
+
+    from datamate.preparation.models import TableProfile
+    from datamate.preparation.native_relations import (
+        NATIVE_RELATION_VERSION,
+        enrich_native_relations,
+    )
+
+    native = {
+        e.binding.binding_id
+        for e in bindings.entries
+        if e.acceptance_rule == NATIVE_RELATION_VERSION
+    }
+    if not native:
+        return AuditFinding("native_source_relations", "*", "NOT_APPLICABLE", "no native receipts")
+    stored = {
+        p.table_id: p
+        for row in db.execute("SELECT profile FROM meta.profiles").fetchall()
+        if (p := TableProfile.model_validate_json(row[0]))
+    }
+    if not set(bindings.table_ids) <= stored.keys():
+        return AuditFinding("native_source_relations", "*", "FAIL", "source profiles missing")
+    base = replace(
+        bindings,
+        entries=tuple(e for e in bindings.entries if e.acceptance_rule != NATIVE_RELATION_VERSION),
+    )
+    rebuilt = enrich_native_relations(
+        db, [stored[t] for t in bindings.table_ids], base, record_issues=False
+    )
+    expected = {
+        e.binding.binding_id
+        for e in rebuilt.entries
+        if e.acceptance_rule == NATIVE_RELATION_VERSION
+    }
+    status = "PASS" if native == expected else "FAIL"
+    return AuditFinding(
+        "native_source_relations",
+        "*",
+        status,
+        f"receipts={len(native)}; source_rebuilt={len(expected)}",
+    )
+
+
+def _source_product_identity(db, scope, table_name, bindings):
+    from datamate.preparation.native_relations import has_native_proof
+    from datamate.preparation.storage import _decoded
+    from datamate.preparation.text_state import effective_values
+
+    aliases = {}
+    for b in bindings.accepted:
+        if (
+            b.kind == "entity"
+            and b.entity_scope == "product"
+            and b.entity_relation == "alias"
+            and has_native_proof(b, bindings)
+        ):
+            aliases.setdefault((b.table_id, b.columns[0], b.entity_target), set()).add(
+                b.value.partition(":")[2]
+            )
+    if not aliases:
+        return AuditFinding(
+            "source_product_identity", scope, "NOT_APPLICABLE", "no derived identities"
+        )
+    rows = db.execute(
+        f"SELECT c.product_id,c.table_id,p.column_id,p.record_id,r.values_json "
+        f'FROM meta."{table_name}" c '
+        "JOIN meta.projection_lineage p ON p.fact_id=c.fact_id "
+        "AND p.scope=? AND p.role='product_id' "
+        "JOIN staging.raw_rows r ON r.record_id=p.record_id",
+        [scope],
+    ).fetchall()
+    checked = mismatch = 0
+    target_columns = {(table, column) for table, column, _ in aliases}
+    for code, table, column, record, payload in rows:
+        if (table, column) not in target_columns:
+            continue
+        values = effective_values(db, record, tuple(_decoded(v) for v in json.loads(payload)))
+        name = values[int(column[1:]) - 1]
+        expected = aliases.get((table, column, name), set())
+        checked += 1
+        mismatch += len(expected) != 1 or code not in expected
+    return AuditFinding(
+        "source_product_identity",
+        scope,
+        "FAIL" if mismatch else "PASS",
+        f"checked={checked}; mismatch={mismatch}",
+    )
+
+
 def audit_prepared(db: DuckDBPyConnection, bindings: SemanticBindings) -> AuditReport:
     """Audit original rows and projected facts, never parser-reported pass scores."""
     descriptors = _descriptors(db)
@@ -402,6 +566,9 @@ def audit_prepared(db: DuckDBPyConnection, bindings: SemanticBindings) -> AuditR
     text_issues = audit_text_state(db)
     accounting, data_count = _raw_accounting(db)
     findings = [accounting, _fact_lineage(db)]
+    native_check = _native_relations_audit(db, bindings)
+    if native_check.status != "NOT_APPLICABLE":
+        findings.append(native_check)
     by_scope = {row[0]: row for row in descriptors}
     supported = {item[0] for item in _SCOPES.values()}
     capability_absence = {
@@ -470,7 +637,11 @@ def audit_prepared(db: DuckDBPyConnection, bindings: SemanticBindings) -> AuditR
             )
         )
         findings.append(_field_lineage(db, scope, table_name, columns))
+        if "product_id" in columns:
+            findings.append(_source_product_identity(db, scope, table_name, bindings))
         findings.append(_source_numeric(db, scope, table_name, columns))
+        if "quantity_base" in columns:
+            findings.append(_source_unit_conversion(db, scope, table_name, bindings))
     frozen = tuple(findings)
     state_digest = _state_digest(db)
     report_digest = _report_digest(frozen, state_digest, bindings.digest, data_count)

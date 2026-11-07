@@ -38,6 +38,7 @@ from datamate.preparation.normalization import (
     NormalizeQuantityOperation,
     ParseValuesOperation,
     PreserveRawOperation,
+    ResolveEntitiesOperation,
     encoded,
 )
 from datamate.preparation.operations import (
@@ -292,6 +293,28 @@ def registry_plan(bindings: SemanticBindings) -> CleaningPlan:
                     table_id=table,
                     operation=ParseValuesOperation(
                         role=role, columns=tuple(dict.fromkeys(columns))
+                    ),
+                    binding_ids=ids,
+                    evidence=evidence,
+                )
+            )
+        aliases = [
+            b
+            for b in accepted
+            if b.kind == "entity"
+            and b.entity_relation == "alias"
+            and b.entity_scope == "product"
+            and b.value.startswith("product:")
+        ]
+        if aliases:
+            steps.append(
+                CleaningStep(
+                    table_id=table,
+                    operation=ResolveEntitiesOperation(
+                        columns=aliases[0].columns,
+                        scope="product",
+                        namespace="product",
+                        input_kind="alias",
                     ),
                     binding_ids=ids,
                     evidence=evidence,
@@ -555,8 +578,8 @@ def _build(workspace: Path, *, inputs: BusinessInputs, policy: PreparationPolicy
         bindings = _source_roles(profiles, clauses, policy.binding_proposals)
         from datamate.preparation.native_relations import enrich_native_relations
 
-        bindings = enrich_native_relations(db, profiles, bindings)
         finalize_text_state(db, bindings)
+        bindings = enrich_native_relations(db, profiles, bindings)
         if bindings.entries:
             db.executemany(
                 "INSERT INTO meta.bindings VALUES (?,?,?,?)",

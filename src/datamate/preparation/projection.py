@@ -43,8 +43,18 @@ _MONEY = frozenset(
         "fee_amount",
     }
 )
-_NUMERIC = _MONEY | {"quantity", "inventory_quantity"}
-_IDS = frozenset({"order_id", "product_id", "imei", "warranty_status"})
+_NUMERIC = _MONEY | {"quantity", "inventory_quantity", "quantity_base"}
+_IDS = frozenset(
+    {
+        "order_id",
+        "product_id",
+        "imei",
+        "warranty_status",
+        "unit",
+        "product_name",
+        "quantity_base_unit",
+    }
+)
 _TIMES = frozenset({"payment_at", "snapshot_at"})
 _GROUPED = frozenset({"order_headers", "shipping_components", "fee_components"})
 
@@ -239,6 +249,21 @@ def project_facts(
         elif binding.kind == "grain" and binding.value in _SCOPES:
             grain_bindings.append(binding)
 
+    derived_products = set()
+    for binding in bindings.accepted:
+        if (
+            binding.kind == "entity"
+            and binding.entity_scope == "product"
+            and binding.value.startswith("product:")
+        ):
+            from datamate.preparation.native_relations import has_native_proof
+
+            if has_native_proof(binding, bindings):
+                table_id = binding.table_id
+                if "product_id" not in by_table[table_id] and "product_name" in by_table[table_id]:
+                    derived_products.add(table_id)
+                    by_table[table_id]["product_id"] = by_table[table_id]["product_name"]
+
     descriptors = []
     by_scope: dict[str, list] = defaultdict(list)
     for grain in grain_bindings:
@@ -247,6 +272,26 @@ def project_facts(
         grains = by_scope.get(scope, [])
         if not grains:
             continue
+        if scope == "order_lines":
+            optional = tuple(
+                role
+                for role in ("unit", "product_name")
+                if all(role in by_table[g.table_id] for g in grains)
+            )
+            normalized = all(
+                physical.get(g.table_id)
+                and all(
+                    all(
+                        value.get(field) is not None
+                        for field in ("quantity_base", "quantity_base_unit")
+                    )
+                    for _, _, value in physical[g.table_id]
+                )
+                for g in grains
+            )
+            required = (*required, *optional)
+            if normalized:
+                required = (*required, "quantity_base", "quantity_base_unit")
         rows: list[_Row] = []
         blocked: set[str] = set()
         source_tables = set()
@@ -257,7 +302,10 @@ def project_facts(
             role_columns = by_table[table_id]
             for role in required:
                 source_role = "device_imeis_slash" if role == "imei" else role
-                if role != "snapshot_at" and source_role not in role_columns:
+                if (
+                    role not in {"snapshot_at", "quantity_base", "quantity_base_unit"}
+                    and source_role not in role_columns
+                ):
                     blocked.add(role)
                 if source_role in collisions[table_id]:
                     blocked.add(role)
@@ -274,8 +322,16 @@ def project_facts(
                         source_columns[role] = ""  # declaration, not a source cell
                         continue
                     source_role = "device_imeis_slash" if role == "imei" else role
-                    column = role_columns[source_role]
-                    mapped[role] = values.get(column)
+                    if role in {"quantity_base", "quantity_base_unit"}:
+                        column = role_columns["quantity"]
+                        mapped[role] = values.get(role)
+                    else:
+                        column = role_columns[source_role]
+                        mapped[role] = (
+                            values.get("product_id")
+                            if role == "product_id" and table_id in derived_products
+                            else values.get(column)
+                        )
                     source_columns[role] = column
                     if not _compatible(role, mapped[role]) and role != "imei":
                         blocked.add(role)
