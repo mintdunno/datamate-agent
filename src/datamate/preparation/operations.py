@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import unicodedata
+from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time
@@ -219,7 +220,7 @@ def _validate_resolution_step(step: CleaningStep, referenced: list[Binding]) -> 
         ):
             raise ValueError("entity resolution requires scoped source declarations")
     else:
-        require_role(operation.product_column, {"product_id"})
+        require_role(operation.product_column, {"product_id", "product_name"})
         require_role(operation.quantity_column, {"quantity", "inventory_quantity"})
         require_role(operation.unit_column, {"unit"})
         if operation.preconverted_column:
@@ -236,6 +237,7 @@ class OperationState:
         self.table_name = "op_" + uuid4().hex
         db.execute(f'CREATE TEMP TABLE "{self.table_name}"(key VARCHAR PRIMARY KEY,payload JSON)')
         self._authorized = frozenset()
+        self._step_ids = {}
         self.binding_entries = {}
         self.source_clauses = ()
         self.bindings = None
@@ -252,6 +254,8 @@ class OperationState:
         self._authorized = frozenset()
         self.binding_entries = {}
         self.source_clauses = ()
+        self._unit_contexts = {}
+        self._step_ids = {}
         validate_plan(plan, bindings)
         self._authorized = frozenset(step.step_id for step in plan.steps)
         self.binding_entries = {
@@ -259,6 +263,16 @@ class OperationState:
         }
         self.source_clauses = bindings.clauses
         self.bindings = bindings
+
+    def step_identifier(self, step: CleaningStep) -> str:
+        # Retain the immutable object to prevent object-id reuse from bypassing authorization.
+        cached = self._step_ids.get(id(step))
+        if cached is not None and cached[0] is step:
+            return cached[1]
+        identifier = step.step_id
+        if identifier in self._authorized:
+            self._step_ids[id(step)] = (step, identifier)
+        return identifier
 
     def reset_boundary(self, boundary_id: str) -> None:
         if self._closed or not boundary_id.strip():
@@ -303,7 +317,9 @@ class OperationState:
             for r in batch
         }
         self.origins = {
-            (r.record_id, c): [step.step_id] for r in batch for c in self.cells[r.record_id]
+            (r.record_id, c): [self.step_identifier(step)]
+            for r in batch
+            for c in self.cells[r.record_id]
         }
         self.events = []
         self.extra_lineage = []
@@ -409,7 +425,7 @@ def _fill_merged(batch: Sequence[RawRecord], step: CleaningStep, state: Operatio
                     TransformEvent(
                         record.record_id,
                         column,
-                        step.step_id,
+                        state.step_identifier(step),
                         "UNRESOLVED",
                         before,
                         before,
@@ -438,7 +454,7 @@ def _fill_merged(batch: Sequence[RawRecord], step: CleaningStep, state: Operatio
                     TransformEvent(
                         record.record_id,
                         column,
-                        step.step_id,
+                        state.step_identifier(step),
                         "UNRESOLVED",
                         before,
                         before,
@@ -450,17 +466,20 @@ def _fill_merged(batch: Sequence[RawRecord], step: CleaningStep, state: Operatio
             value = _decoded(anchor["value"])
             if before is None:
                 state.cells[record.record_id][column] = value
-                state.origins[record.record_id, column].append(step.step_id)
+                state.origins[record.record_id, column].append(state.step_identifier(step))
                 state.extra_lineage.append(
                     LineageEdge(
-                        "row:" + record.record_id, anchor["record_id"], column, step.step_id
+                        "row:" + record.record_id,
+                        anchor["record_id"],
+                        column,
+                        state.step_identifier(step),
                     )
                 )
                 state.events.append(
                     TransformEvent(
                         record.record_id,
                         column,
-                        step.step_id,
+                        state.step_identifier(step),
                         "APPLIED",
                         before,
                         value,
@@ -472,7 +491,7 @@ def _fill_merged(batch: Sequence[RawRecord], step: CleaningStep, state: Operatio
                     TransformEvent(
                         record.record_id,
                         column,
-                        step.step_id,
+                        state.step_identifier(step),
                         "UNRESOLVED",
                         before,
                         before,
@@ -482,7 +501,7 @@ def _fill_merged(batch: Sequence[RawRecord], step: CleaningStep, state: Operatio
 
 
 def _inherit_group(batch: Sequence[RawRecord], step: CleaningStep, state: OperationState) -> None:
-    key = "group:" + step.step_id
+    key = "group:" + state.step_identifier(step)
     stored = state.db.execute(
         f'SELECT payload FROM "{state.table_name}" WHERE key=?', [key]
     ).fetchone()
@@ -508,7 +527,7 @@ def _inherit_group(batch: Sequence[RawRecord], step: CleaningStep, state: Operat
                     "row:" + record.record_id,
                     carry["origin"],
                     step.operation.group_key,
-                    step.step_id,
+                    state.step_identifier(step),
                 )
             )
         if carry is None:
@@ -516,7 +535,7 @@ def _inherit_group(batch: Sequence[RawRecord], step: CleaningStep, state: Operat
                 TransformEvent(
                     record.record_id,
                     step.operation.group_key,
-                    step.step_id,
+                    state.step_identifier(step),
                     "UNRESOLVED",
                     group,
                     group,
@@ -532,14 +551,17 @@ def _inherit_group(batch: Sequence[RawRecord], step: CleaningStep, state: Operat
                     cells[column] = first
                     state.extra_lineage.append(
                         LineageEdge(
-                            "row:" + record.record_id, carry["origin"], column, step.step_id
+                            "row:" + record.record_id,
+                            carry["origin"],
+                            column,
+                            state.step_identifier(step),
                         )
                     )
                     state.events.append(
                         TransformEvent(
                             record.record_id,
                             column,
-                            step.step_id,
+                            state.step_identifier(step),
                             "APPLIED",
                             before,
                             first,
@@ -551,7 +573,7 @@ def _inherit_group(batch: Sequence[RawRecord], step: CleaningStep, state: Operat
                         TransformEvent(
                             record.record_id,
                             column,
-                            step.step_id,
+                            state.step_identifier(step),
                             "UNRESOLVED",
                             before,
                             before,
@@ -565,7 +587,7 @@ def _inherit_group(batch: Sequence[RawRecord], step: CleaningStep, state: Operat
                     TransformEvent(
                         record.record_id,
                         column,
-                        step.step_id,
+                        state.step_identifier(step),
                         "UNRESOLVED",
                         before,
                         before,
@@ -589,7 +611,7 @@ def _deduplicate_order(
                 TransformEvent(
                     record.record_id,
                     step.operation.group_key,
-                    step.step_id,
+                    state.step_identifier(step),
                     "UNRESOLVED",
                     group,
                     group,
@@ -621,7 +643,9 @@ def _deduplicate_order(
                 original,
             )
             state.extra_lineage.extend(
-                LineageEdge("row:" + original, record.record_id, column, step.step_id)
+                LineageEdge(
+                    "row:" + original, record.record_id, column, state.step_identifier(step)
+                )
                 for column in state.cells[record.record_id]
             )
         else:
@@ -665,9 +689,11 @@ def _derived_value(
     if column in state.cells[record.record_id]:
         raise ValueError("derived field already exists")
     state.cells[record.record_id][column] = value
-    state.origins[record.record_id, column] = [step.step_id]
+    state.origins[record.record_id, column] = [state.step_identifier(step)]
     state.extra_lineage.extend(
-        LineageEdge("row:" + record.record_id, record.record_id, dependency, step.step_id)
+        LineageEdge(
+            "row:" + record.record_id, record.record_id, dependency, state.step_identifier(step)
+        )
         for dependency in dependencies
     )
 
@@ -749,7 +775,7 @@ def _resolve_entities(
             TransformEvent(
                 record.record_id,
                 output,
-                step.step_id,
+                state.step_identifier(step),
                 "APPLIED" if supported else "UNRESOLVED",
                 before,
                 after,
@@ -777,19 +803,23 @@ def _normalize_quantity(
     dependencies = (operation.product_column, operation.quantity_column, operation.unit_column)
     if operation.preconverted_column:
         dependencies += (operation.preconverted_column,)
-    declarations = {
-        state.binding_entries[i].binding.binding_id
-        for i in step.binding_ids
-        if state.binding_entries[i].binding.kind == "unit"
-    }
-    context = replace(
-        state.bindings,
-        entries=tuple(
-            replace(e, status="UNRESOLVED") if e.status == "CONFLICT" else e
-            for e in state.bindings.entries
-            if e.binding.table_id == step.table_id
-        ),
-    )
+    if state.step_identifier(step) not in state._unit_contexts:
+        grouped = defaultdict(list)
+        evidence = defaultdict(set)
+        authorized = set(step.binding_ids)
+        for entry in state.bindings.entries:
+            binding = entry.binding
+            if binding.table_id == step.table_id and binding.kind == "unit":
+                grouped[binding.unit_product].append(
+                    replace(entry, status="UNRESOLVED") if entry.status == "CONFLICT" else entry
+                )
+                if binding.binding_id in authorized and entry.status == "ACCEPTED":
+                    evidence[binding.unit_product].update(binding.evidence)
+        contexts = {
+            key: replace(state.bindings, entries=tuple(entries)) for key, entries in grouped.items()
+        }
+        state._unit_contexts[state.step_identifier(step)] = (contexts, evidence, {})
+    contexts, evidence, resolved = state._unit_contexts[state.step_identifier(step)]
     for record in batch:
         if state.dispositions[record.record_id].kind != "retained":
             continue
@@ -798,16 +828,23 @@ def _normalize_quantity(
         after = None
         reason = "quantity lacks current product-scoped unit proof"
         try:
-            product = record.source.values[int(operation.product_column[1:]) - 1]
-            unit = record.source.values[int(operation.unit_column[1:]) - 1]
+            product = cells.get(operation.product_column)
+            unit = cells.get(operation.unit_column)
             if type(product) is not str or type(unit) is not str:
                 raise ValueError(reason)
-            resolution = resolve_units(context, product_id=product, unit=unit)
+            context = contexts.get(product)
+            if context is None:
+                raise ValueError("product has no source unit declarations")
+            key = (product, unit)
+            if key not in resolved:
+                if len(resolved) >= 10000:
+                    resolved.pop(next(iter(resolved)))
+                resolved[key] = resolve_units(context, product_id=product, unit=unit)
+            resolution = resolved[key]
             if resolution.status != "ACCEPTED":
                 raise ValueError("unit graph is unresolved or conflicting")
             # Every source edge used for this row must be authorized and evidenced.
-            refs = {e for i in declarations for e in state.binding_entries[i].binding.evidence}
-            if not set(resolution.evidence) <= refs:
+            if not set(resolution.evidence) <= evidence[product]:
                 raise ValueError("unit path is missing accepted evidence dependencies")
             raw_quantity = _decimal_quantity(before)
             expected = reconcile_quantity(raw_quantity, Decimal(0), resolution.factor)
@@ -824,6 +861,17 @@ def _normalize_quantity(
                 ("quantity_conversion_factor", resolution.factor),
             ):
                 _derived_value(record, output, value, dependencies, step, state)
+            for ref in resolution.evidence:
+                if ref.locator.startswith("raw:"):
+                    source_record, column = ref.locator[4:].rsplit("/", 1)
+                    state.extra_lineage.append(
+                        LineageEdge(
+                            "row:" + record.record_id,
+                            source_record,
+                            column,
+                            state.step_identifier(step),
+                        )
+                    )
             reason = "current product-scoped conversion and source reconciliation"
         except ValueError as error:
             after = None
@@ -832,7 +880,7 @@ def _normalize_quantity(
             TransformEvent(
                 record.record_id,
                 "quantity_base",
-                step.step_id,
+                state.step_identifier(step),
                 "APPLIED" if after is not None else "UNRESOLVED",
                 before,
                 after,
@@ -849,7 +897,10 @@ def execute_batch(
         raise ValueError("batch must contain at most 1000 distinct records")
     if any(r.table_id != step.table_id for r in batch):
         raise ValueError("operation scope does not match source table")
-    if step.operation.name != "preserve_raw" and step.step_id not in state._authorized:
+    if (
+        step.operation.name != "preserve_raw"
+        and state.step_identifier(step) not in state._authorized
+    ):
         raise ValueError("transformation is not authorized by a validated plan")
     state._begin_batch(batch, step)
     if step.operation.name == "classify_structure":
@@ -918,12 +969,12 @@ def execute_batch(
             for record, before, after in zip(records, values, changed, strict=True):
                 supported = before is None or type(before) is str
                 state.cells[record.record_id][column] = after
-                state.origins[record.record_id, column].append(step.step_id)
+                state.origins[record.record_id, column].append(state.step_identifier(step))
                 state.events.append(
                     TransformEvent(
                         record.record_id,
                         column,
-                        step.step_id,
+                        state.step_identifier(step),
                         "APPLIED" if supported else "UNRESOLVED",
                         before,
                         after,
@@ -967,12 +1018,12 @@ def execute_batch(
                 decision = select_parse(candidates, binding)
                 after = decision.value if decision.status == "ACCEPTED" else before
                 state.cells[record.record_id][column] = after
-                state.origins[record.record_id, column].append(step.step_id)
+                state.origins[record.record_id, column].append(state.step_identifier(step))
                 state.events.append(
                     TransformEvent(
                         record.record_id,
                         column,
-                        step.step_id,
+                        state.step_identifier(step),
                         "APPLIED" if decision.status == "ACCEPTED" else decision.status,
                         before,
                         after,

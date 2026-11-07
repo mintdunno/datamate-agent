@@ -497,3 +497,44 @@ def test_trimmed_code_similarity_cannot_become_identity_proof(tmp_path):
             None,
         ]
         assert [r.source.values[0] for r in batch] == [" 001 ", "001", "1"]
+
+
+def test_unit_resolutions_are_cached_across_batches_with_many_products(tmp_path, monkeypatch):
+    from datamate.preparation import operations
+
+    lines = [
+        line
+        for i in range(100)
+        for line in (f"unit_base[product=P{i}]: can", f"unit_factor[product=P{i}]: pack = 2 can")
+    ]
+    db, table, _, _, bindings, batch = world(
+        tmp_path,
+        lines,
+        [("P99", 1, "pack", None)] * 12,
+    )
+    calls = []
+    original = operations.resolve_units
+
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(operations, "resolve_units", counted)
+    hashes = []
+    original_id = CleaningStep.step_id.fget
+
+    def counted_id(instance):
+        hashes.append(1)
+        return original_id(instance)
+
+    monkeypatch.setattr(CleaningStep, "step_id", property(counted_id))
+    step = step_for(table, bindings, quantity_operation())
+    plan = CleaningPlan(
+        bindings_digest=bindings.digest, profile_digests=bindings.profile_digests, steps=(step,)
+    )
+    with db, OperationState(db, table.table_id) as state:
+        state.authorize(plan, bindings)
+        for record in batch:
+            assert execute_batch((record,), step, state).facts[0].values["quantity_base"] == 2
+    assert len(calls) == 1
+    assert len(hashes) < 20

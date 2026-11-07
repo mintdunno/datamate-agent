@@ -17,7 +17,9 @@ from pydantic import Field, model_validator
 from datamate.contracts.base import ContractModel, Sha256
 from datamate.preparation.catalog import (
     _GRAIN_ROLES,
+    _README_ROLE_MEANINGS,
     _ROLE_HEADERS,
+    _declared_role,
     _source_name,
     compile_clauses,
     rule_entries,
@@ -33,6 +35,7 @@ from datamate.preparation.normalization import (
     DeduplicateOrderOperation,
     FillMergedOperation,
     InheritGroupOperation,
+    NormalizeQuantityOperation,
     ParseValuesOperation,
     PreserveRawOperation,
     encoded,
@@ -101,14 +104,36 @@ def _source_roles(profiles, clauses, supplied: tuple[Binding, ...]) -> SemanticB
     for profile in profiles:
         for column in profile.columns:
             name = _source_name(effective_header(profile, column))
-            for role, names in _ROLE_HEADERS.items():
+            candidates = {}
+            for role in sorted(_ROLE_HEADERS.keys() | _README_ROLE_MEANINGS.keys()):
+                cited = [
+                    c
+                    for c in clauses
+                    if role in {"unit", "base_unit", "unit_factor"}
+                    and c.status != "CONFLICT"
+                    and _declared_role(name, role, profile, c)
+                ]
+                if name in _ROLE_HEADERS.get(role, set()) or cited:
+                    candidates[role] = cited
+            for role, cited in candidates.items():
                 key = ("role", profile.table_id, (column.column_id,))
-                if name not in names or key in occupied:
+                if len(candidates) != 1 or key in occupied:
                     continue
                 evidence = EvidenceRef(
                     source=profile.source,
                     sha256=profile.source_sha256,
                     locator=f"header:{profile.table_id}/{column.column_id}",
+                )
+                clause_refs = tuple(
+                    EvidenceRef(
+                        source=c.source_document.source,
+                        sha256=c.source_document.sha256,
+                        locator=f"clause:{c.clause_id}",
+                        line_start=c.line_start,
+                        line_end=c.line_end,
+                        quote_sha256=c.quote_sha256,
+                    )
+                    for c in cited
                 )
                 proposals.append(
                     Binding(
@@ -117,7 +142,7 @@ def _source_roles(profiles, clauses, supplied: tuple[Binding, ...]) -> SemanticB
                         columns=(column.column_id,),
                         value=role,
                         profile_digest=profile.digest,
-                        evidence=(evidence,),
+                        evidence=(evidence, *clause_refs),
                     )
                 )
     roles = validate_bindings(clauses, profiles, proposals)
@@ -267,6 +292,23 @@ def registry_plan(bindings: SemanticBindings) -> CleaningPlan:
                     table_id=table,
                     operation=ParseValuesOperation(
                         role=role, columns=tuple(dict.fromkeys(columns))
+                    ),
+                    binding_ids=ids,
+                    evidence=evidence,
+                )
+            )
+        units = [b for b in accepted if b.kind == "unit"]
+        roles = {b.value: b for b in accepted if b.kind == "role"}
+        product = roles.get("product_id") or roles.get("product_name")
+        quantity = roles.get("quantity") or roles.get("inventory_quantity")
+        if units and product and quantity and "unit" in roles:
+            steps.append(
+                CleaningStep(
+                    table_id=table,
+                    operation=NormalizeQuantityOperation(
+                        product_column=product.columns[0],
+                        quantity_column=quantity.columns[0],
+                        unit_column=roles["unit"].columns[0],
                     ),
                     binding_ids=ids,
                     evidence=evidence,
@@ -511,6 +553,9 @@ def _build(workspace: Path, *, inputs: BusinessInputs, policy: PreparationPolicy
                 [profile.table_id, profile.model_dump_json()],
             )
         bindings = _source_roles(profiles, clauses, policy.binding_proposals)
+        from datamate.preparation.native_relations import enrich_native_relations
+
+        bindings = enrich_native_relations(db, profiles, bindings)
         finalize_text_state(db, bindings)
         if bindings.entries:
             db.executemany(

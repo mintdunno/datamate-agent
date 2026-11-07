@@ -383,7 +383,7 @@ def retrieve_clauses(query: str, clauses: Sequence[RuleClause], *, limit: int) -
 
 _ROLE_HEADERS = {
     "order_id": {"order_id", "mã hóa đơn", "mã hoá đơn", "ma hoa don", "số hóa đơn"},
-    "product_id": {"product_id", "mã hàng", "ma hang", "mã sản phẩm"},
+    "product_id": {"product_id", "mã hàng", "ma hang", "mã sản phẩm", "mã sku"},
     "customer_id": {"customer_id", "mã khách", "mã khách hàng"},
     "ordered_at": {"ordered_at", "ngày đặt", "ngay dat"},
     "quantity": {"quantity", "số lượng", "so luong"},
@@ -395,7 +395,9 @@ _ROLE_HEADERS = {
     "unit_cost": {"unit_cost"},
     "unit": {"unit"},
     "quantity_base": {"quantity_base"},
-    "product_name": {"product_name"},
+    "unit_factor": {"unit_factor"},
+    "base_unit": {"base_unit"},
+    "product_name": {"product_name", "tên sản phẩm", "tên hàng"},
     "customer_name": {"customer_name"},
 }
 _ROLE_DECLARATIONS = {
@@ -418,8 +420,10 @@ _README_ROLE_MEANINGS = {
     "product_id": r"mã (?:hàng|sản phẩm)",
     "quantity": r"số lượng(?: sản phẩm)?",
     "ordered_at": r"ngày (?:bán|đặt hàng)",
-    "unit": r"đơn vị(?: tính)?(?: cơ bản)?",
-    "product_name": r"tên(?: hàng| sản phẩm)",
+    "unit": r"(?:đơn vị(?: tính)?|đơn vị lớn(?: \([^()\n]*\))?)",
+    "base_unit": r"đơn vị cơ bản",
+    "unit_factor": r"hệ số: số đơn vị cơ bản trong 1 đơn vị lớn",
+    "product_name": r"tên(?: hàng| sản phẩm)(?: \(file chỉ có mặt hàng có đơn vị lớn\))?",
     "customer_name": r"tên khách(?: hàng)?(?: \(khách lẻ nếu không lưu\))?",
     "line_net_amount": r"thành tiền sau giảm(?: giá)?",
 }
@@ -774,6 +778,10 @@ def _literal_proof(binding: Binding, bindings: SemanticBindings, declaration: st
         or binding.table_id not in bindings.table_ids
     ):
         return False
+    from datamate.preparation.native_relations import has_native_proof
+
+    if has_native_proof(binding, bindings):
+        return True
     source_profiles = {
         table_id: (digest, source, source_hash)
         for table_id, digest, source, source_hash in bindings.profile_sources

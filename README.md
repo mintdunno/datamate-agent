@@ -366,3 +366,25 @@ thinking behavior is the provider default. Raw text may include inline thought
 markers; factual acceptance still requires the typed output tool and source checks.
 Google requests use a separate provider ledger, not the exhausted NIM smoke quota.
 This is an experimental cloud profile, not offline or competition qualification.
+
+
+### Native product-scoped unit evidence
+
+Registry preparation can derive unit receipts from complete source-table rows with
+accepted identity, unit, factor and base-unit semantics. Exact README field declarations
+recognize unit metadata; generic `name` fields and fuzzy identity matches do not establish
+product identity. Cross-table name/code links require unique catalog rows and exact keys.
+Transaction tables are excluded from catalog authority. Duplicate, conflicting, missing
+or conditioned conversion evidence remains unresolved in the dependent quantity scope.
+Unknown conversion columns are treated as unsupported scope, rather than silently ignored.
+
+Native CSV, Excel and SQLite numeric factors follow the same lossless Decimal checks.
+The registered `normalize_quantity` operation preserves original values and produces
+separate `quantity_base`, `quantity_base_unit` and `quantity_conversion_factor` facts.
+Foreign factor/product source rows are retained in binding evidence and fact lineage.
+Policy files cannot supply an accepted native-proof flag. Source/profile/implementation
+hashes invalidate these receipts and caches. Graph results and immutable step identities
+are cached only inside the authorized operation state, never as model answers.
+
+These receipts do not qualify an entire business or automatically establish source grain,
+complete product linkage, temporal applicability, or query-time measure semantics.

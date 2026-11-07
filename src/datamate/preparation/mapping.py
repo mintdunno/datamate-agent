@@ -60,6 +60,24 @@ def store_mapping_issues(
                 "preserve the raw values and inspect existing transform events for evidence.",
             )
         )
+    if db.execute(
+        "SELECT count(*) FROM information_schema.tables WHERE table_schema='meta' "
+        "AND table_name='source_relation_issues'"
+    ).fetchone()[0]:
+        for table, reason, count in db.execute(
+            "SELECT table_id,reason,count(*) FROM meta.source_relation_issues "
+            "GROUP BY table_id,reason ORDER BY table_id,reason"
+        ).fetchall():
+            issues.append(
+                NormalizationIssue(
+                    issue_id=sha256(
+                        f"relation:{bindings.digest}:{table}:{reason}".encode()
+                    ).hexdigest(),
+                    scope=table,
+                    kind="source_relation_unresolved",
+                    detail=f"{count} source relations remain unresolved: {reason}.",
+                )
+            )
     db.execute(
         "CREATE TABLE meta.normalization_issues(issue_id VARCHAR PRIMARY KEY, "
         "scope VARCHAR,kind VARCHAR,issue_json JSON)"
