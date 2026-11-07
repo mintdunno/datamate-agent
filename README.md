@@ -420,3 +420,9 @@ request/rate limits. `--campaign-policy` accepts a `CampaignPolicy` JSON configu
 `config/experiments/native_relations_google_campaign.json` fixes the approved experiment
 at 20 requests (smoke 4, development 12, final 4). Existing campaign limits cannot be
 reset by changing run IDs. Registry/replay modes remain offline and make no model calls.
+
+
+Unicode finalization/audit materializes key domains only for viable repair candidates
+and their complete native foreign-key component. Clean identifier columns and unrelated
+components require no key-domain materialization. When a repair is considered, every
+required domain value is still checked; no sampled uniqueness or FK proof is substituted.

@@ -348,3 +348,22 @@ def test_mapping_recovery_reconstructs_native_receipts_without_mutating_artifact
     )
     assert result.status == "NO_MAPPING_ISSUE"
     assert result.prepared.catalog["qualification"]["order_lines"] == "READY"
+
+
+@pytest.mark.parametrize("operation", ["finalize", "audit"])
+def test_clean_identity_columns_do_not_materialize_repair_domains(tmp_path, monkeypatch, operation):
+    from datamate.preparation import text_state
+
+    root = native_world(tmp_path)
+    result = prepare(root, tmp_path)
+    with duckdb.connect(str(result.database)) as db:
+        bindings = _current_bindings(root, result, db)
+
+        def forbidden(*args, **kwargs):
+            pytest.fail("Clean source keys have no repair candidates requiring a domain scan")
+
+        monkeypatch.setattr(text_state, "_domains", forbidden)
+        if operation == "finalize":
+            text_state.finalize_text_state(db, bindings)
+        else:
+            assert text_state.audit_text_state(db) == {}

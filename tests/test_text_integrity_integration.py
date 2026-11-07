@@ -230,3 +230,34 @@ def test_unused_damaged_header_does_not_block_safe_scope(tmp_path):
     result = prepare(root, tmp_path)
     assert result.catalog["qualification"]["order_lines"] == "READY"
     assert result.catalog["text_integrity"]["lossy"] >= 1
+
+
+def test_key_domain_audit_scans_only_the_connected_repair_component(tmp_path, monkeypatch):
+    from datamate.preparation import text_state
+
+    root, business = split(tmp_path)
+    with sqlite3.connect(business / "sales.sqlite") as db:
+        db.execute("CREATE TABLE products(product_id TEXT PRIMARY KEY)")
+        db.execute("INSERT INTO products VALUES (?)", ("Tiếng Việt",))
+        db.execute(
+            "CREATE TABLE sales(order_id TEXT, product_id TEXT REFERENCES products(product_id), "
+            "quantity INTEGER,line_net_amount INTEGER)"
+        )
+        db.execute("INSERT INTO sales VALUES ('A',?,2,100)", (mojibake("Tiếng Việt"),))
+        db.execute("CREATE TABLE unrelated(other_id TEXT PRIMARY KEY)")
+        db.execute("INSERT INTO unrelated VALUES ('unrelated-clean-id')")
+    result = prepare(root, tmp_path)
+    seen = []
+    original = text_state._domains
+
+    def tracked(db, columns):
+        seen.append(set(columns))
+        return original(db, columns)
+
+    monkeypatch.setattr(text_state, "_domains", tracked)
+    with duckdb.connect(str(result.database)) as db:
+        unrelated = db.execute(
+            "SELECT table_id FROM meta.source_tables WHERE table_name='unrelated'"
+        ).fetchone()[0]
+        assert text_state.audit_text_state(db) == {}
+    assert seen and all(table != unrelated for columns in seen for table, _ in columns)

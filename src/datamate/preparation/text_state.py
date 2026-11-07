@@ -555,9 +555,41 @@ def _component_witnesses(db, relations, node):
     return component if valid else ()
 
 
+def _repair_domain_columns(db, protected, relations):
+    """A key-domain proof is needed only for a viable repair with native FK evidence."""
+    candidates = set()
+    for row in _receipts(db):
+        node = (row[1], row[3])
+        proof = json.loads(row[10])
+        if row[2] is None or proof["kind"] == "metadata":
+            continue
+        if node not in protected and not proof.get("protected"):
+            continue
+        decision = TextDecision.model_validate_json(row[8])
+        policy = TextIntegrityPolicy.model_validate_json(row[9])
+        if inspect_text(decision.before, policy).status == "ACCEPTED":
+            candidates.add(node)
+    needed = set()
+    for node in candidates:
+        component = {node}
+        changed = True
+        while changed:
+            changed = False
+            for child, child_col, target, target_col in relations:
+                endpoints = {(child, child_col), (target, target_col)}
+                if component & endpoints and not endpoints <= component:
+                    component.update(endpoints)
+                    changed = True
+        if any((child, column) in component for child, column, _, _ in relations):
+            needed.update(component)
+    return needed
+
+
 def finalize_text_state(db, bindings) -> None:
     protected, relations = _protected_columns(db, bindings)
-    _domains(db, protected)
+    needed = _repair_domain_columns(db, protected, relations)
+    if needed:
+        _domains(db, needed)
     witnesses = {}
     for row in _receipts(db):
         node = (row[1], row[3])
@@ -567,7 +599,9 @@ def finalize_text_state(db, bindings) -> None:
         policy = TextIntegrityPolicy.model_validate_json(row[9])
         replay = inspect_text(decision.before, policy)
         if node not in witnesses:
-            witnesses[node] = _component_witnesses(db, relations, node)
+            witnesses[node] = (
+                _component_witnesses(db, relations, node) if replay.status == "ACCEPTED" else ()
+            )
         component = witnesses[node]
         accepted = bool(component) and replay.status == "ACCEPTED"
         status = "ACCEPTED" if accepted else "LOSSY" if replay.status == "LOSSY" else "UNRESOLVED"
@@ -577,7 +611,7 @@ def finalize_text_state(db, bindings) -> None:
             status,
             {"protected": True, "foreign_keys": [list(r) for r in component] if accepted else []},
         )
-    db.execute("DROP TABLE text_key_domains")
+    db.execute("DROP TABLE IF EXISTS text_key_domains")
 
 
 def apply_text_to_batch(state: OperationState, batch: Sequence[RawRecord]) -> None:
@@ -669,7 +703,9 @@ def audit_text_state(db: DuckDBPyConnection) -> dict[str, set[str]]:
             )
     issues = {}
     protected, relations = _protected_columns(db)
-    _domains(db, protected)
+    needed = _repair_domain_columns(db, protected, relations)
+    if needed:
+        _domains(db, needed)
     try:
         for row in _receipts(db):
             proof = json.loads(row[10])
@@ -731,7 +767,7 @@ def audit_text_state(db: DuckDBPyConnection) -> dict[str, set[str]]:
         if db.execute("SELECT 1 FROM text_expected LIMIT 1").fetchone():
             raise ValueError("missing text integrity receipts")
     finally:
-        db.execute("DROP TABLE text_key_domains")
+        db.execute("DROP TABLE IF EXISTS text_key_domains")
         db.execute("DROP TABLE text_expected")
     return issues
 
