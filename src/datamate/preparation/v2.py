@@ -347,9 +347,20 @@ def registry_plan(bindings: SemanticBindings) -> CleaningPlan:
     )
 
 
+def _insert_result_rows(db, statement: str, rows: list[tuple]) -> None:
+    # Columnar parameters avoid one Python-to-DuckDB execution per lineage edge.
+    # The caller owns the preparation transaction and supplies only static SQL.
+    if not rows:
+        raise duckdb.InvalidInputException("Result insertion requires a nonempty batch")
+    db.execute(statement, [list(column) for column in zip(*rows, strict=True)])
+
+
 def _store_result(db, result) -> None:
-    db.executemany(
-        "INSERT INTO meta.dispositions VALUES (?,?,?,?,?)",
+    _insert_result_rows(
+        db,
+        "INSERT INTO meta.dispositions SELECT "
+        "unnest(?::VARCHAR[]),unnest(?::VARCHAR[]),unnest(?::VARCHAR[]),"
+        "unnest(?::VARCHAR[]),unnest(?::VARCHAR[])",
         [
             (
                 d.record_id,
@@ -362,21 +373,30 @@ def _store_result(db, result) -> None:
         ],
     )
     if result.facts:
-        db.executemany(
-            "INSERT INTO meta.facts VALUES (?,?,?)",
+        _insert_result_rows(
+            db,
+            "INSERT INTO meta.facts SELECT "
+            "unnest(?::VARCHAR[]),unnest(?::VARCHAR[]),unnest(?::VARCHAR[])",
             [
                 (f.fact_id, f.table_role, _json({k: encoded(v) for k, v in f.values.items()}))
                 for f in result.facts
             ],
         )
     if result.lineage:
-        db.executemany(
-            "INSERT INTO meta.lineage VALUES (?,?,?,?)",
+        _insert_result_rows(
+            db,
+            "INSERT INTO meta.lineage SELECT "
+            "unnest(?::VARCHAR[]),unnest(?::VARCHAR[]),unnest(?::VARCHAR[]),"
+            "unnest(?::VARCHAR[])",
             [(e.fact_id, e.record_id, e.column_id, e.step_id) for e in result.lineage],
         )
     if result.events:
-        db.executemany(
-            "INSERT INTO meta.transform_events VALUES (?,?,?,?,?,?,?)",
+        _insert_result_rows(
+            db,
+            "INSERT INTO meta.transform_events SELECT "
+            "unnest(?::VARCHAR[]),unnest(?::VARCHAR[]),unnest(?::VARCHAR[]),"
+            "unnest(?::VARCHAR[]),unnest(?::VARCHAR[]),unnest(?::VARCHAR[]),"
+            "unnest(?::VARCHAR[])",
             [
                 (
                     e.record_id,
