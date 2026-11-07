@@ -441,3 +441,12 @@ The current native-relation pilot has **Milestone 1 PARTIAL** status and a **FAI
 strict five-business quality gate. Full-source execution, cell-level improvements,
 SML evidence and remaining SQL/financial-contract gaps are recorded in the
 [qualification report](docs/engineering/native_relations_report.md).
+
+
+Financial mappings distinguish recorded `unit_price` from `unit_cost`, and line/order
+amount/percentage discounts. A recorded price does not establish its unit basis or
+qualify an official revenue measure. Percentage parsing distinguishes explicit source
+percent points from native Excel ratio formats; unsupported formats stay unresolved.
+An optional registered line-amount formula requires an exact source declaration,
+matching quantity/price units and explicit discount dependencies. Its separate
+`derived_line_net_amount` never overwrites an observed amount and performs no rounding.

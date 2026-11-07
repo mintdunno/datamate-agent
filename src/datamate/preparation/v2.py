@@ -33,6 +33,7 @@ from datamate.preparation.normalization import (
     CleaningPlan,
     CleaningStep,
     DeduplicateOrderOperation,
+    DeriveLineAmountOperation,
     FillMergedOperation,
     InheritGroupOperation,
     NormalizeQuantityOperation,
@@ -190,6 +191,11 @@ def registry_plan(bindings: SemanticBindings) -> CleaningPlan:
         "line_net_amount": "money",
         "payment_amount": "money",
         "unit_cost": "money",
+        "unit_price": "money",
+        "line_discount_amount": "money",
+        "order_discount_amount": "money",
+        "line_discount_percent": "percentage",
+        "order_discount_percent": "percentage",
         "quantity": "quantity",
         "inventory_quantity": "quantity",
         "ordered_at": "datetime",
@@ -335,6 +341,27 @@ def registry_plan(bindings: SemanticBindings) -> CleaningPlan:
                         product_column=product.columns[0],
                         quantity_column=quantity.columns[0],
                         unit_column=roles["unit"].columns[0],
+                    ),
+                    binding_ids=ids,
+                    evidence=evidence,
+                )
+            )
+        formulas = [
+            b for b in accepted if b.kind == "measure" and b.value.startswith("line_amount:")
+        ]
+        if len(formulas) == 1 and "line_net_amount" not in roles:
+            formula = formulas[0].value.removeprefix("line_amount:")
+            from datamate.preparation.financial import FORMULA_ROLES
+
+            inputs = FORMULA_ROLES[formula]
+            steps.append(
+                CleaningStep(
+                    table_id=table,
+                    operation=DeriveLineAmountOperation(
+                        quantity_column=roles["quantity"].columns[0],
+                        unit_price_column=roles["unit_price"].columns[0],
+                        formula=formula,
+                        discount_column=roles[inputs[2]].columns[0] if len(inputs) == 3 else None,
                     ),
                     binding_ids=ids,
                     evidence=evidence,

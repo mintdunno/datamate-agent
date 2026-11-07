@@ -393,6 +393,11 @@ _ROLE_HEADERS = {
     "payment_at": {"payment_at"},
     "inventory_quantity": {"inventory_quantity"},
     "unit_cost": {"unit_cost"},
+    "unit_price": {"unit_price"},
+    "line_discount_amount": {"line_discount_amount"},
+    "line_discount_percent": {"line_discount_percent"},
+    "order_discount_amount": {"order_discount_amount"},
+    "order_discount_percent": {"order_discount_percent"},
     "unit": {"unit"},
     "quantity_base": {"quantity_base"},
     "unit_factor": {"unit_factor"},
@@ -426,11 +431,15 @@ _README_ROLE_MEANINGS = {
     "product_name": r"tên(?: hàng| sản phẩm)(?: \(file chỉ có mặt hàng có đơn vị lớn\))?",
     "customer_name": r"tên khách(?: hàng)?(?: \(khách lẻ nếu không lưu\))?",
     "line_net_amount": r"thành tiền sau giảm(?: giá)?",
+    "unit_price": r"đơn giá(?: ghi nhận| bán)?",
+    "line_discount_amount": r"giảm giá dòng bằng tiền",
+    "line_discount_percent": r"tỷ lệ giảm giá dòng \(%\)",
+    "order_discount_amount": r"giảm giá toàn đơn bằng tiền",
+    "order_discount_percent": r"tỷ lệ giảm giá toàn đơn \(%\)",
 }
 
 
-def _declared_role(header: str, role: str, profile: TableProfile, clause: RuleClause) -> bool:
-    """Prove a complete field declaration in its native file section."""
+def _source_clause_applies(profile: TableProfile, clause: RuleClause) -> bool:
     # The nearest file-bearing ancestor remains authoritative under subheadings.
     headings = []
     for line in clause.source_document.text.splitlines()[: clause.line_start - 1]:
@@ -446,6 +455,13 @@ def _declared_role(header: str, role: str, profile: TableProfile, clause: RuleCl
             if filename not in named_files:
                 return False
             break
+    return True
+
+
+def _declared_role(header: str, role: str, profile: TableProfile, clause: RuleClause) -> bool:
+    """Prove a complete field declaration in its native file section."""
+    if not _source_clause_applies(profile, clause):
+        return False
     text = re.sub(r"^[-*+]\s+", "", _source_name(clause.quote))
     field = (
         r"(?:\*\*"
@@ -618,6 +634,29 @@ def validate_bindings(
                         _declared_role(header, proposal.value, profile, c) for c in cited
                     )
                 reason = "explicit column declaration" if accepted else reason
+            elif proposal.kind == "measure" and proposal.value.startswith("line_amount:"):
+                from datamate.preparation.financial import FORMULA_DECLARATIONS, FORMULA_ROLES
+
+                formula = proposal.value.removeprefix("line_amount:")
+                required = FORMULA_ROLES.get(formula, ())
+                fields = [entries[d].binding for d in proposal.dependencies]
+                role_columns = {
+                    b.value: b.columns[0]
+                    for b in fields
+                    if b.kind == "role" and b.table_id == proposal.table_id and len(b.columns) == 1
+                }
+                declaration = FORMULA_DECLARATIONS.get(formula)
+                accepted = (
+                    bool(required)
+                    and set(role_columns) == set(required)
+                    and (set(proposal.columns) == {role_columns[r] for r in required})
+                    and any(
+                        _source_clause_applies(profile, c)
+                        and _source_name(c.quote).strip("- ") == declaration
+                        for c in cited
+                    )
+                )
+                reason = "explicit same-unit line formula without rounding" if accepted else reason
             elif proposal.kind in {"entity", "unit"}:
                 proof_context = SemanticBindings(
                     (),

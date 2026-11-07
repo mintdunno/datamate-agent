@@ -108,6 +108,11 @@ class RoleMapping(ContractModel):
         "order_total",
         "inventory_quantity",
         "unit_cost",
+        "unit_price",
+        "line_discount_amount",
+        "line_discount_percent",
+        "order_discount_amount",
+        "order_discount_percent",
         "payment_amount",
         "payment_at",
     ]

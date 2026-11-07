@@ -38,7 +38,16 @@ from datamate.preparation.normalization import (
 from datamate.preparation.storage import _decoded, read_staged_table
 
 _PARSE_ROLES = {
-    "money": {"order_total", "line_net_amount", "payment_amount", "unit_cost"},
+    "money": {
+        "order_total",
+        "line_net_amount",
+        "payment_amount",
+        "unit_cost",
+        "unit_price",
+        "line_discount_amount",
+        "order_discount_amount",
+    },
+    "percentage": {"line_discount_percent", "order_discount_percent"},
     "quantity": {"quantity", "inventory_quantity", "quantity_base"},
     "id": {"order_id", "product_id", "customer_id"},
     "date": {"ordered_at", "payment_at"},
@@ -88,6 +97,7 @@ OPERATION_ORDER = {
     "parse_values": 5,
     "resolve_entities": 6,
     "normalize_quantity": 7,
+    "derive_line_amount": 8,
 }
 
 
@@ -144,6 +154,35 @@ def validate_plan(plan: CleaningPlan, bindings: SemanticBindings) -> None:
                         for b in referenced
                     ):
                         raise ValueError("parse role is not justified by accepted column semantics")
+            if step.operation.name == "derive_line_amount":
+                from datamate.preparation.financial import FORMULA_ROLES
+
+                op = step.operation
+                roles = {
+                    b.value: b.columns[0]
+                    for b in referenced
+                    if b.kind == "role" and len(b.columns) == 1
+                }
+                required = FORMULA_ROLES[op.formula]
+                formula_bindings = [
+                    b
+                    for b in referenced
+                    if b.kind == "measure" and b.value.startswith("line_amount:")
+                ]
+                if (
+                    len(formula_bindings) != 1
+                    or formula_bindings[0].value != "line_amount:" + op.formula
+                    or not set(formula_bindings[0].dependencies)
+                    <= {b.binding_id for b in referenced}
+                    or any(role not in roles for role in required)
+                    or roles.get("quantity") != op.quantity_column
+                    or roles.get("unit_price") != op.unit_price_column
+                    or (len(required) == 3 and roles.get(required[2]) != op.discount_column)
+                    or "line_net_amount" in roles
+                ):
+                    raise ValueError(
+                        "line formula lacks exact source roles, unit basis or authority"
+                    )
             if step.operation.name in {"inherit_group", "deduplicate_order"}:
                 if not any(
                     b.kind == "role"
@@ -1074,7 +1113,26 @@ def execute_batch(
                         (style and is_date_format(style)) or binding.binding.value == "excel_serial"
                     ):
                         context["workbook_epoch"] = epoch
-                candidates = parse_candidates(before, step.operation.role, step.evidence, context)
+                percent_style_unknown = False
+                if step.operation.role == "percentage":
+                    index = int(column[1:]) - 1
+                    style = (
+                        record.source.formats[index] if index < len(record.source.formats) else None
+                    )
+                    if (
+                        isinstance(style, str)
+                        and "%" in style
+                        and type(before) in (int, float, Decimal)
+                    ):
+                        if re.fullmatch(r"[0#]+(?:\.[0#]+)?\s*%", style):
+                            context["percentage_ratio"] = True
+                        else:
+                            percent_style_unknown = True
+                candidates = (
+                    ()
+                    if percent_style_unknown
+                    else parse_candidates(before, step.operation.role, step.evidence, context)
+                )
                 decision = select_parse(candidates, binding)
                 after = decision.value if decision.status == "ACCEPTED" else before
                 state.cells[record.record_id][column] = after
@@ -1094,6 +1152,49 @@ def execute_batch(
         _resolve_entities(batch, step, state)
     elif step.operation.name == "normalize_quantity":
         _normalize_quantity(batch, step, state)
+    elif step.operation.name == "derive_line_amount":
+        from datamate.preparation.financial import compute_line_amount
+
+        op = step.operation
+        dependencies = (op.quantity_column, op.unit_price_column) + (
+            (op.discount_column,) if op.discount_column is not None else ()
+        )
+        for record in batch:
+            if state.dispositions[record.record_id].kind != "retained":
+                continue
+            cells = state.cells[record.record_id]
+            try:
+                value = compute_line_amount(
+                    cells.get(op.quantity_column),
+                    cells.get(op.unit_price_column),
+                    formula=op.formula,
+                    discount=cells.get(op.discount_column) if op.discount_column else None,
+                )
+            except (ValueError, TypeError, ArithmeticError):
+                state.events.append(
+                    TransformEvent(
+                        record.record_id,
+                        "derived_line_net_amount",
+                        state.step_identifier(step),
+                        "UNRESOLVED",
+                        None,
+                        None,
+                        "line formula dependencies or precision unresolved",
+                    )
+                )
+                continue
+            _derived_value(record, "derived_line_net_amount", value, dependencies, step, state)
+            state.events.append(
+                TransformEvent(
+                    record.record_id,
+                    "derived_line_net_amount",
+                    state.step_identifier(step),
+                    "APPLIED",
+                    None,
+                    value,
+                    "explicit same-unit source line formula; no rounding",
+                )
+            )
     elif step.operation.name != "preserve_raw":
         raise ValueError("unregistered operation")
     facts = []

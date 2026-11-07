@@ -13,6 +13,7 @@ from typing import Annotated, Literal, Self
 from pydantic import Field, model_validator
 
 from datamate.contracts.base import ContractModel, NonblankString, Sha256
+from datamate.preparation.financial import LineAmountFormula
 from datamate.preparation.models import EvidenceRef as Evidence
 from datamate.preparation.models import (
     ParseCandidate,
@@ -69,7 +70,7 @@ class ParseValuesOperation(ContractModel):
     name: Literal["parse_values"] = "parse_values"
     version: Literal["1"] = "1"
     columns: tuple[NonblankString, ...] = Field(min_length=1)
-    role: Literal["money", "quantity", "id", "date", "datetime"]
+    role: Literal["money", "quantity", "percentage", "id", "date", "datetime"]
 
 
 class ClassifyStructureOperation(ContractModel):
@@ -123,6 +124,26 @@ class NormalizeQuantityOperation(ContractModel):
         return self
 
 
+class DeriveLineAmountOperation(ContractModel):
+    name: Literal["derive_line_amount"] = "derive_line_amount"
+    version: Literal["1"] = "1"
+    quantity_column: NonblankString
+    unit_price_column: NonblankString
+    formula: LineAmountFormula
+    discount_column: NonblankString | None = None
+
+    @model_validator(mode="after")
+    def complete_formula(self) -> Self:
+        if (self.formula == "quantity_times_price") != (self.discount_column is None):
+            raise ValueError("formula requires exactly its declared discount dependencies")
+        values = [self.quantity_column, self.unit_price_column]
+        if self.discount_column is not None:
+            values.append(self.discount_column)
+        if len(values) != len(set(values)):
+            raise ValueError("formula dependencies must be distinct")
+        return self
+
+
 class CleaningStep(ContractModel):
     table_id: NonblankString
     operation: Annotated[
@@ -134,7 +155,8 @@ class CleaningStep(ContractModel):
         | InheritGroupOperation
         | DeduplicateOrderOperation
         | ResolveEntitiesOperation
-        | NormalizeQuantityOperation,
+        | NormalizeQuantityOperation
+        | DeriveLineAmountOperation,
         Field(discriminator="name"),
     ]
     binding_ids: tuple[Sha256, ...] = ()
@@ -513,8 +535,25 @@ def parse_candidates(
     value: TypedValue, role: str, evidence: Sequence[Evidence], context: dict
 ) -> tuple[ParseCandidate, ...]:
     """Enumerate source-compatible interpretations without selecting a winner."""
-    if role not in {"money", "quantity", "id", "date", "datetime"}:
+    if role not in {"money", "quantity", "percentage", "id", "date", "datetime"}:
         raise ValueError("unsupported parse role")
+    if role == "percentage":
+        if (
+            set(context) - {"percentage_ratio"}
+            or type(context.get("percentage_ratio", False)) is not bool
+        ):
+            raise ValueError("percentage context requires a native source-format flag")
+        token = value.strip().removesuffix("%").strip() if type(value) is str else value
+        choices = []
+        for candidate in _numeric_candidates(token, "quantity"):
+            with localcontext() as decimal_context:
+                decimal_context.prec = 80
+                number = Decimal(candidate.value)
+                if context.get("percentage_ratio") and type(value) in (int, float, Decimal):
+                    number *= 100
+            if number.is_finite() and 0 <= number <= 100:
+                choices.append(replace(candidate, value=number, unit="percent"))
+        return tuple(choices)
     if set(context) - _DATE_CONTEXT_KEYS:
         raise ValueError("context must contain explicit source fields only")
     if value is None:
