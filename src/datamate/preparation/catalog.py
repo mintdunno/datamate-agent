@@ -453,7 +453,13 @@ def _declared_role(header: str, role: str, profile: TableProfile, clause: RuleCl
         + r")"
     )
     legacy = _ROLE_DECLARATIONS.get(role)
-    if legacy and re.fullmatch(field + r"\s+là\s+" + legacy + r"[.;]?", text):
+    # Semicolons separate positive field declarations. Arbitrary sentence prefixes
+    # (including negations) cannot authorize a mapping by substring resemblance.
+    domain = r"(?:\*\*(?:công nợ|tồn kho|giá vốn|nhập hàng)\*\*:\s*)?"
+    if legacy and any(
+        re.fullmatch(domain + field + r"\s+là\s+" + legacy + r"[.;]?", part.strip())
+        for part in text.split(";")
+    ):
         return True
     meaning = _README_ROLE_MEANINGS.get(role)
     return bool(meaning and re.fullmatch(field + r"\s*:\s*" + meaning + r"[.;]?", text))

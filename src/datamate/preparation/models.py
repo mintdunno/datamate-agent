@@ -222,14 +222,12 @@ class EvidencePacket(ContractModel):
     omitted: tuple[EvidenceRef, ...] = ()
 
     @model_validator(mode="after")
-    def source_only_and_bounded(self) -> Self:
+    def source_only_and_unique(self) -> Self:
         if any(not _solver_source(item.source) for item in self.omitted):
             raise ValueError("source-only omitted path required")
         refs = tuple(item.evidence for item in self.excerpts) + self.omitted
         if len(set(refs)) != len(refs):
             raise ValueError("duplicate evidence reference")
-        if len(self.model_dump_json().encode("utf-8")) > 24000:
-            raise ValueError("evidence exceeds 24000 bytes; reselect with explicit omissions")
         return self
 
 

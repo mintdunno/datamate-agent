@@ -16,14 +16,17 @@ from pydantic import TypeAdapter, ValidationError
 from datamate.contracts.base import NonblankString, Sha256
 from datamate.inference.budget import BudgetExceeded, RequestBudget
 from datamate.inference.config import ModelProfile
+from datamate.preparation.mapping import MappingProposal
 from datamate.preparation.models import (
     Binding,
     BusinessInputs,
     EvidencePacket,
     EvidenceRef,
     NormalizationIssue,
+    RuleClause,
     SemanticBindings,
     SourceExcerpt,
+    TableProfile,
     _solver_source,
 )
 from datamate.preparation.normalization import CleaningPlan
@@ -143,6 +146,7 @@ def build_evidence_packet(
     selected: Sequence[int] | None = None,
     bindings_digest: str,
     profile_digests: tuple[str, ...],
+    byte_limit: int | None = None,
 ) -> EvidencePacket:
     """Read cited source spans from the current business snapshot, recording omissions."""
     available = {item.relative_path: item for item in (*inputs.sources, *inputs.documents)}
@@ -187,13 +191,22 @@ def build_evidence_packet(
             raise ValueError("source span is outside the current file")
         text = "".join(lines[reference.line_start - 1 : reference.line_end])
         excerpts.append(SourceExcerpt(evidence=reference, text=text))
-    return EvidencePacket(
+    packet = EvidencePacket(
         issue_id=issue.issue_id,
         bindings_digest=bindings_digest,
         profile_digests=profile_digests,
         excerpts=tuple(excerpts),
         omitted=tuple(ref for index, ref in enumerate(references) if index not in selected_set),
     )
+
+    if byte_limit is not None:
+        if byte_limit < 1:
+            raise ValueError("evidence byte budget must be positive")
+        if len(packet.model_dump_json().encode("utf-8")) > byte_limit:
+            raise ValueError(
+                "evidence exceeds configured byte budget; reselect with explicit omissions"
+            )
+    return packet
 
 
 @asynccontextmanager
@@ -373,12 +386,6 @@ async def cleaning_plan_proposer(
         raise ValueError("offline modes cannot open a model transport")
     if transport_retries not in (0, 1):
         raise ValueError("adaptive transport permits at most one retry")
-    if (
-        profile.max_tokens != 2048
-        or profile.input_byte_limit != 24000
-        or profile.context_window < 32768
-    ):
-        raise ValueError("selected adaptive profile must pin 2048 output and 24000 input bytes")
     if profile.runtime == "nim" and budget.campaign_id is None:
         raise ValueError("NIM adaptive proposals require the shared campaign ledger")
     if not isinstance(bindings, SemanticBindings):
@@ -524,3 +531,36 @@ async def cleaning_plan_proposer(
             return result.output
 
         yield propose
+
+
+async def propose_role_mapping(
+    profile: ModelProfile,
+    budget: RequestBudget,
+    table_profile: TableProfile,
+    clauses: Sequence[RuleClause],
+    bindings: SemanticBindings,
+    *,
+    transport: AsyncBaseTransport | None = None,
+    env_file: Path | None = None,
+) -> MappingProposal:
+    """One actual request at most; format errors and exhaustion never retry silently."""
+    from pydantic_ai import Agent, UsageLimits
+    from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
+
+    from datamate.inference.client import inference_model
+    from datamate.preparation.mapping import MappingProposal, mapping_prompt
+
+    if budget.rpm > 40:
+        raise ValueError("adaptive provider rate cannot exceed 40 RPM")
+    if profile.runtime == "nim" and budget.campaign_id is None:
+        raise ValueError("NIM adaptive proposals require the shared campaign ledger")
+    prompt = mapping_prompt(table_profile, clauses, bindings, profile.input_byte_limit)
+    async with inference_model(
+        profile, budget, transport=transport, max_retries=0, env_file=env_file
+    ) as model:
+        agent = Agent(model, output_type=MappingProposal, retries=0)
+        try:
+            result = await agent.run(prompt, usage_limits=UsageLimits(request_limit=1))
+        except (UnexpectedModelBehavior, UsageLimitExceeded, ValidationError) as error:
+            raise PlanFormatError("invalid typed role mapping output") from error
+        return result.output

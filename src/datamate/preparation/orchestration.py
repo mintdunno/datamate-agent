@@ -11,6 +11,7 @@ from hashlib import sha256
 from pathlib import Path
 from time import monotonic
 
+import duckdb
 from httpx import AsyncBaseTransport
 
 from datamate.inference.budget import RequestBudget
@@ -49,6 +50,37 @@ def _inventory(inputs):
     return tuple(
         sorted((item.relative_path, item.sha256) for item in (*inputs.sources, *inputs.documents))
     )
+
+
+def _promote_candidate(
+    candidate: PreparedBusiness, cache_root: Path, trials: Path
+) -> PreparedBusiness:
+    source = candidate.database.parent.resolve()
+    _load_cache(source, candidate.fingerprint)
+    target = (cache_root / candidate.fingerprint).resolve()
+    if not source.is_relative_to(trials.resolve()) or not target.is_relative_to(cache_root):
+        raise ValueError("candidate promotion escaped its owned workspace")
+    if target.exists():
+        return _load_cache(target, candidate.fingerprint)
+    source.rename(target)
+    try:
+        return replace(_load_cache(target, candidate.fingerprint), cache_hit=False)
+    except BaseException:
+        if source.exists() or not target.resolve().is_relative_to(cache_root):
+            raise RuntimeError("cannot restore failed owned promotion") from None
+        target.rename(source)
+        raise
+
+
+def _raw_digest(prepared: PreparedBusiness) -> str:
+    digest = sha256()
+    with duckdb.connect(str(prepared.database), read_only=True) as db:
+        cursor = db.execute("SELECT * FROM staging.raw_rows ORDER BY record_id")
+        while batch := cursor.fetchmany(1000):
+            for row in batch:
+                digest.update(json.dumps(row, ensure_ascii=False, separators=(",", ":")).encode())
+                digest.update(b"\n")
+    return digest.hexdigest()
 
 
 async def prepare_with_recovery(
@@ -181,6 +213,7 @@ async def prepare_with_recovery(
             Path.read_bytes,
             bindings_digest=bindings.digest,
             profile_digests=bindings.profile_digests,
+            byte_limit=profile.input_byte_limit if profile is not None else None,
         )
         if not allow_model_calls:
             return finish(
@@ -244,28 +277,7 @@ async def prepare_with_recovery(
                 unchanged()
                 if candidate.manifest_path.read_bytes() != frozen_manifest:
                     raise ValueError("verifier modified the immutable trial manifest")
-                source = candidate.database.parent.resolve()
-                _load_cache(source, candidate.fingerprint)
-                target = (cache_root / candidate.fingerprint).resolve()
-                if not source.is_relative_to(trials.resolve()) or not target.is_relative_to(
-                    cache_root
-                ):
-                    raise ValueError("candidate promotion escaped its owned workspace")
-                if target.exists():
-                    selected = _load_cache(target, candidate.fingerprint)
-                else:
-                    source.rename(target)
-                    try:
-                        selected = replace(
-                            _load_cache(target, candidate.fingerprint), cache_hit=False
-                        )
-                    except BaseException:
-                        # Only this newly created target is moved back. TemporaryDirectory
-                        # then cleans the owned trial, keeping the ordinary cache atomic.
-                        if source.exists() or not target.resolve().is_relative_to(cache_root):
-                            raise RuntimeError("cannot restore failed owned promotion") from None
-                        target.rename(source)
-                        raise
+                selected = _promote_candidate(candidate, cache_root, trials)
 
         async def audit_candidate(current_issue, candidate, _delta):
             ready = {
@@ -309,5 +321,213 @@ async def prepare_with_recovery(
                     else 0,
                 },
                 stream,
+            )
+        raise
+
+
+async def prepare_with_mapping_recovery(
+    split_root: Path,
+    business_id: str,
+    cache_root: Path,
+    *,
+    split_id: str,
+    run_dir: Path,
+    table_id: str | None = None,
+    allow_model_calls: bool = False,
+    profile: ModelProfile | None = None,
+    budget: RequestBudget | None = None,
+    policy: PreparationPolicy | None = None,
+    transport: AsyncBaseTransport | None = None,
+    env_file: Path | None = None,
+) -> AdaptivePreparationResult:
+    """Discover gaps, propose roles once, then rebuild and audit an isolated candidate.
+
+    Mapping acceptance is not business qualification. No issue-selector callback,
+    evaluator knowledge, arbitrary code, model-authored evidence or hidden retry is used.
+    """
+    from datamate.preparation.adaptive import propose_role_mapping
+    from datamate.preparation.mapping import mapping_bindings
+
+    if allow_model_calls and (profile is None or budget is None):
+        raise ValueError("adaptive model calls require an explicit profile and budget")
+    if budget is not None and budget.rpm > 40:
+        raise ValueError("adaptive provider rate cannot exceed 40 RPM")
+    policy = PreparationPolicy() if policy is None else PreparationPolicy.model_validate(policy)
+    if policy.mode != "registry":
+        raise ValueError("mapping recovery requires registry preparation")
+    inputs = discover_business(split_root, business_id, split_id=split_id)
+    if budget is not None and budget.path.resolve().is_relative_to(inputs.split_root.resolve()):
+        raise ValueError("ledger must remain outside the source split")
+    inventory = _inventory(inputs)
+    cache_root, run_dir = Path(cache_root).resolve(), Path(run_dir).resolve()
+    if run_dir.is_relative_to(inputs.split_root.resolve()) or cache_root.is_relative_to(
+        inputs.split_root.resolve()
+    ):
+        raise ValueError("adaptive outputs must remain outside the source split")
+    run_dir.mkdir(parents=True, exist_ok=False)
+    started = monotonic()
+    initial_attempts = int(budget.snapshot()["run_attempts"]) if budget else 0
+    trace = {}
+
+    def unchanged():
+        if _inventory(discover_business(split_root, business_id, split_id=split_id)) != inventory:
+            raise ValueError("source snapshot changed during mapping recovery")
+
+    baseline = None
+    try:
+        baseline = await asyncio.to_thread(
+            prepare_business, split_root, business_id, cache_root, split_id=split_id, policy=policy
+        )
+
+        def finish(status, reason, candidate=baseline):
+            unchanged()
+            report = {
+                "mode": "adaptive_mapping",
+                "status": status,
+                "reason": reason,
+                "split_id": split_id,
+                "business_id": business_id,
+                "table_id": table_id,
+                "baseline_fingerprint": baseline.fingerprint,
+                "selected_fingerprint": candidate.fingerprint,
+                "model_id": profile.model_id if profile else None,
+                "profile_sha256": sha256(profile.model_dump_json().encode()).hexdigest()
+                if profile
+                else None,
+                "http_attempts": int(budget.snapshot()["run_attempts"]) - initial_attempts
+                if budget
+                else 0,
+                "accounting": budget.snapshot() if budget else None,
+                "elapsed_seconds": monotonic() - started,
+                **trace,
+            }
+            with (run_dir / "report.json").open("x", encoding="utf8") as handle:
+                json.dump(report, handle, ensure_ascii=False, indent=2)
+            return AdaptivePreparationResult(baseline, candidate, None, status)
+
+        profiles = tuple(
+            TableProfile.model_validate_json(json.dumps(p)) for p in baseline.catalog["tables"]
+        )
+        clauses = compile_clauses(inputs.documents, split_id=split_id)
+        bindings = _source_roles(profiles, clauses, policy.binding_proposals)
+        if bindings.digest != baseline.catalog["bindings_digest"]:
+            raise ValueError("source bindings changed after registry preparation")
+        issues = tuple(
+            NormalizationIssue.model_validate_json(json.dumps(i))
+            for i in baseline.catalog["issues"]
+        )
+        candidates = [
+            p
+            for p in profiles
+            if any(i.kind == "unmapped_role" and i.scope == p.table_id for i in issues)
+        ]
+        if table_id is not None:
+            candidates = [p for p in candidates if p.table_id == table_id]
+            if not any(p.table_id == table_id for p in profiles):
+                raise ValueError("mapping scope is outside the active business")
+        if not candidates:
+            return finish(
+                "NO_MAPPING_ISSUE",
+                "No unmapped-role issue in the selected scope; other issue kinds may remain.",
+            )
+        selected_profile = candidates[0]
+        table_id = selected_profile.table_id
+        trace["issues"] = [i.model_dump(mode="json") for i in issues if i.scope == table_id]
+        if not allow_model_calls:
+            return finish("PARTIAL", "Model calls explicitly disabled; schema gaps remain marked.")
+        try:
+            proposal = await propose_role_mapping(
+                profile,
+                budget,
+                selected_profile,
+                clauses,
+                bindings,
+                transport=transport,
+                env_file=env_file,
+            )
+        except Exception as error:
+            # This is an explicit proposal boundary: retain results and record failure,
+            # including provider errors and exhausted budgets. Never retry or switch models.
+            trace["proposal_error_type"] = type(error).__name__
+            if isinstance(error, ValueError):
+                trace["proposal_error"] = str(error)[:240]
+            return finish("PARTIAL", "Mapping proposal failed; baseline retained.")
+        trace["proposal"] = proposal.model_dump(mode="json")
+        unchanged()
+        if not proposal.mappings:
+            return finish("PARTIAL", "Model proposed no source-backed mapping.")
+        try:
+            proposed = mapping_bindings(proposal, selected_profile, clauses)
+        except ValueError as error:
+            trace["validation_error"] = str(error)
+            return finish("PARTIAL", "Mapping references invalid source coordinates.")
+        current = {(b.table_id, b.columns): b.value for b in bindings.accepted if b.kind == "role"}
+        if any(
+            (b.table_id, b.columns) in current and current[(b.table_id, b.columns)] != b.value
+            for b in proposed
+        ):
+            return finish("PARTIAL", "Proposal would overwrite accepted source semantics.")
+        proposed = tuple(b for b in proposed if (b.table_id, b.columns) not in current)
+        reviewed = _source_roles(profiles, clauses, (*policy.binding_proposals, *proposed))
+        accepted_ids = {b.binding_id for b in reviewed.accepted}
+        accepted = tuple(b for b in proposed if b.binding_id in accepted_ids)
+        trace["mapping_validation"] = [
+            {"column_id": b.columns[0], "role": b.value, "accepted": b.binding_id in accepted_ids}
+            for b in proposed
+        ]
+        if not accepted:
+            return finish("PARTIAL", "No proposed mapping passed source validation.")
+        next_policy = policy.model_copy(
+            update={"binding_proposals": (*policy.binding_proposals, *accepted)}
+        )
+        trials = cache_root / ".adaptive-trials"
+        trials.mkdir(exist_ok=True)
+        if (
+            trials.is_symlink()
+            or trials.is_junction()
+            or not trials.resolve().is_relative_to(cache_root)
+        ):
+            raise ValueError("linked trial workspace is forbidden")
+        with tempfile.TemporaryDirectory(prefix="mapping-", dir=trials) as temporary:
+            candidate = await asyncio.to_thread(
+                prepare_business,
+                split_root,
+                business_id,
+                Path(temporary),
+                split_id=split_id,
+                policy=next_policy,
+            )
+            unchanged()
+            ready = {k for k, v in baseline.catalog["qualification"].items() if v == "READY"}
+            if any(candidate.catalog["qualification"].get(k) != "READY" for k in ready):
+                return finish("PARTIAL", "Candidate regressed an existing READY scope.")
+            if _raw_digest(candidate) != _raw_digest(baseline):
+                return finish("PARTIAL", "Candidate altered immutable raw staging.")
+            # Each prepare already checks source stability, intrinsic audit and content hashes.
+            selected = _promote_candidate(candidate, cache_root, trials)
+        return finish(
+            "MAPPING_ACCEPTED",
+            "Source-validated mappings applied; inspect scoped qualification separately.",
+            selected,
+        )
+
+    except BaseException as error:
+        # Preserve a diagnostic even when preparation or promotion fails after a
+        # paid proposal. The baseline cache remains available; no model retry occurs.
+        with (run_dir / "failure.json").open("x", encoding="utf8") as handle:
+            json.dump(
+                {
+                    "mode": "adaptive_mapping",
+                    "status": "FAILED",
+                    "error_type": type(error).__name__,
+                    "split_id": split_id,
+                    "business_id": business_id,
+                    "baseline_fingerprint": baseline.fingerprint if baseline else None,
+                    "http_attempts": int(budget.snapshot()["run_attempts"]) - initial_attempts
+                    if budget
+                    else 0,
+                    "elapsed_seconds": monotonic() - started,
+                },
+                handle,
             )
         raise

@@ -286,3 +286,38 @@ these issues without claiming that all dirty values have been detected. Exact
 field declarations in a business README may prove roles; file-specific sections
 cannot authorize a different file. Rejected supplied mappings do not hide native
 header mappings, and their rejection remains visible in binding diagnostics.
+
+`python -m datamate.preparation --adaptive-mapping` adds one source-validated role
+proposal to registry preparation. It requires explicit `--profile`, `--ledger`,
+`--run-id` and a fresh `--run-dir`; use the existing split/business/cache arguments.
+Set the credential environment variable named by the profile, or supply an explicit
+`--env-file`. `--table-id` optionally selects a marked physical table; otherwise
+the first table with unmapped roles is selected. Default preparation remains offline.
+
+Adaptive requests use the selected profile's `input_byte_limit`, `context_window`
+and `max_tokens`; no fixed 24,000-byte or 2,048-output-token value is required.
+The shared request ledger defaults to 25 RPM, 1,200 daily requests and a four-attempt
+run ceiling. A mapping invocation sends at most one request with zero hidden retries;
+`--phase smoke` or the default `development` consumes the existing campaign quota.
+No model, backend, thinking mode or quantization fallback occurs. Source context
+includes complete active-business README clauses and four lexical active-rulebook
+clauses; omission count/digest are explicit and never establish source absence.
+Oversized context refuses before HTTP. Accepted mappings regenerate deterministic
+registry operations in an isolated candidate, require unchanged raw staging and no
+READY-scope regression, and use the existing audited atomic promotion.
+
+Inspect the run `report.json` for proposal/validation/usage details.
+`MAPPING_ACCEPTED` confirms source-backed role changes; it does **not** mean the
+business is qualified. Novel wording without registered distinguishing evidence
+remains unresolved. Native row-based unit declarations and name-to-ID conversion
+proof are still unsupported by this role-only path; it never manufactures literal
+unit rules or treats a name resemblance as identity evidence.
+
+The default profiles retain their conservative budgets for reproducibility. To
+allow a larger request, choose explicit values in a compatible model profile, for
+example `input_byte_limit: 48000`, `context_window: 65536`, `max_tokens: 2048`.
+Evidence construction uses that profile's byte budget, not a global 24 KB cap.
+The final transport still checks the complete serialized request, including tools
+and overhead, before any HTTP attempt. Its byte-based context estimate remains
+conservative; exact model-tokenizer counting is not implemented by this change.
+No prior run profile, model, reasoning mode, or budget is silently modified.

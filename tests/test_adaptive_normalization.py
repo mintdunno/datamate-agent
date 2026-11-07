@@ -41,6 +41,7 @@ def source_packet(
     lines=("Source says keep the row.",),
     selected=None,
     bindings_digest="a" * 64,
+    byte_limit=24000,
 ):
     root = tmp_path / "train"
     business = root / "data" / "shop"
@@ -75,6 +76,7 @@ def source_packet(
         selected=selected,
         bindings_digest=bindings_digest,
         profile_digests=("b" * 64,),
+        byte_limit=byte_limit,
     )
     return issue, packet, inputs, refs
 
@@ -853,3 +855,39 @@ def test_combined_prompt_over_24k_requires_reselection_before_http(tmp_path, ove
     asyncio.run(run())
     assert budget.snapshot()["run_attempts"] == 0
     assert sent == []
+
+
+def test_source_packet_accepts_larger_explicit_budget_and_records_omissions(tmp_path):
+    issue, packet, inputs, refs = source_packet(tmp_path, lines=("x" * 10000,))
+    path = inputs.documents[1].path
+    # Reuse an authoritative source packet with a larger source span, never truncate it.
+    from dataclasses import replace
+
+    text = "x" * 26000 + "\n"
+    path.write_bytes(text.encode("utf8"))
+    source = replace(inputs.documents[1], sha256=sha256(path.read_bytes()).hexdigest())
+    inputs = replace(inputs, documents=(inputs.documents[0], source))
+    ref = refs[0].model_copy(
+        update={"sha256": source.sha256, "quote_sha256": sha256(text.encode()).hexdigest()}
+    )
+    large = build_evidence_packet(
+        issue,
+        inputs,
+        (ref,),
+        Path_read_bytes,
+        bindings_digest="a" * 64,
+        profile_digests=("b" * 64,),
+        byte_limit=48000,
+    )
+    assert large.excerpts[0].text == text
+    assert len(large.model_dump_json().encode()) > 24000
+    with pytest.raises(ValueError, match="byte budget"):
+        build_evidence_packet(
+            issue,
+            inputs,
+            (ref,),
+            Path_read_bytes,
+            bindings_digest="a" * 64,
+            profile_digests=("b" * 64,),
+            byte_limit=10000,
+        )

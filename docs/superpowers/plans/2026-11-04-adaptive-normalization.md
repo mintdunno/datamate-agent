@@ -809,3 +809,9 @@ Acceptance: issue discovery is automatic and inspectable, source-backed model
 mappings can drive existing operators, unsupported proposals cannot remove known
 semantics, raw inputs remain unchanged, and all quality gates precede commits.
 No new framework, gold-label expansion, full training evaluation, merge or push.
+
+2026-11-07 user amendment: remove fixed 24,000-byte adaptive/evidence checks.
+Use explicit profile/caller budgets instead; preserve full-request guards, source
+validation, output reserve, omission accounting and shared API budget. Historic
+run profiles remain frozen. Exact tokenizer counting is separate, not claimed by
+this change. No live requests are required to qualify configurable byte budgets.
