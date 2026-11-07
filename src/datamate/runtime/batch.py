@@ -349,6 +349,7 @@ async def run_batch(
                     model_settings=settings,
                     total_token_budget=getattr(profile, "question_token_budget", 24000),
                     tool_call_limit=getattr(profile, "tool_call_limit", 16),
+                    streaming=getattr(profile, "streaming", False),
                 )
                 answer = parse_submission(result.answer)
                 if answer.id != question.id:

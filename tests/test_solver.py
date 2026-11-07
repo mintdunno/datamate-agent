@@ -1,16 +1,18 @@
 import asyncio
+import json
 
 import duckdb
 import pytest
 from pydantic_ai.messages import ModelResponse, ToolCallPart
-from pydantic_ai.models.function import FunctionModel
+from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 from datamate.contracts.inputs import Question
 from datamate.runtime.solver import solve_question
 from datamate.runtime.tools import StructuredTools
 
 
-def test_mock_agent_executes_sql_and_returns_valid_answer(tmp_path):
+@pytest.mark.parametrize("streaming", [False, True])
+def test_mock_agent_executes_sql_and_returns_valid_answer(tmp_path, streaming):
     path = tmp_path / "test.duckdb"
     with duckdb.connect(str(path)) as db:
         db.execute("CREATE TABLE sales(amount INTEGER)")
@@ -32,13 +34,28 @@ def test_mock_agent_executes_sql_and_returns_valid_answer(tmp_path):
             ]
         )
 
+    streamed = []
+
+    async def stream(messages, info):
+        streamed.append(True)
+        response = respond(messages, info)
+        yield {
+            index: DeltaToolCall(name=part.tool_name, json_args=json.dumps(part.args))
+            for index, part in enumerate(response.parts)
+        }
+
     tools = StructuredTools(
         path,
         {"tables": [{"table_id": "sales", "columns": []}], "rules": []},
         allow_legacy_fixture=True,
     )
     question = Question(id="q", business_id="shop", question="Tổng?", as_of_date="2025-01-01")
-    result = asyncio.run(solve_question(question, tools, FunctionModel(respond)))
+    result = asyncio.run(
+        solve_question(
+            question, tools, FunctionModel(respond, stream_function=stream), streaming=streaming
+        )
+    )
+    assert bool(streamed) == streaming
     assert result.answer["answer"] == 5
     assert result.error_code is None
 

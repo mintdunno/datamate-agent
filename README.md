@@ -476,3 +476,8 @@ provenance and unresolved scope semantics; they never set transaction statuses
 or establish whole-business coverage. Invalid proposals retain the prior artifact.
 Independent audit rebuilds annotation receipts and checks the copy exposed to SQL
 tools before source-field publication.
+
+
+The solving runtime and batch runner honor the model profile's streaming flag
+through PydanticAI streamed tool calls. Streaming uses the existing request/token
+ledger, deadlines and per-question limits; it does not switch models or backends.

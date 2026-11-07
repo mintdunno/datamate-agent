@@ -26,6 +26,7 @@ Use as_of_date, not wall clock. Load applicable split and industry rules before 
 Revenue, receivables and sale-price filters differ: never assume universal valid orders.
 Use SQL for every numeric calculation. Respect units, returns, rounding and tie-breaks.
 Inspect schemas and source notes before joins; avoid multiplication of order lines/payments.
+Source annotations describe context; they do not establish transaction status or complete coverage.
 Text values require explicit evidence-backed parsing; do not interpret missing information as zero.
 Missing required facts support unanswerable; inability to solve is abstain.
 Final answer must use the question id and strict JSON kinds, percent units, ISO day/month dates.
@@ -112,6 +113,7 @@ async def solve_question(
     model_settings: dict | None = None,
     total_token_budget: int = 24000,
     tool_call_limit: int = 16,
+    streaming: bool = False,
 ) -> SolveResult:
     started = time.monotonic()
     agent = Agent(
@@ -224,6 +226,10 @@ async def solve_question(
         }
         return sorted(tools.rule_ids_read | queries)
 
+    async def drain(_ctx, events):
+        async for _event in events:
+            pass
+
     try:
         result = await asyncio.wait_for(
             agent.run(
@@ -235,6 +241,7 @@ async def solve_question(
                 ),
                 model_settings=model_settings,
                 usage=usage,
+                event_stream_handler=drain if streaming else None,
             ),
             timeout=deadline,
         )
