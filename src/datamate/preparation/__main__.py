@@ -19,11 +19,19 @@ def main() -> None:
     parser.add_argument("--policy", type=Path, help="Version-2 source-bound PreparationPolicy JSON")
     parser.add_argument("--mode", choices=("registry", "replay"), default="registry")
     parser.add_argument("--diagnostic-path", type=Path, help="Source-only diagnostic JSON output")
-    parser.add_argument(
+    adaptive = parser.add_mutually_exclusive_group()
+    adaptive.add_argument(
         "--adaptive-mapping",
         action="store_true",
         help="One bounded model mapping proposal for a source-marked schema gap",
     )
+    adaptive.add_argument(
+        "--adaptive-business",
+        action="store_true",
+        help="Bounded source-only mapping across distinct business tables",
+    )
+    parser.add_argument("--max-tables", type=int, default=3)
+    parser.add_argument("--campaign-policy", type=Path)
     parser.add_argument("--profile", type=Path)
     parser.add_argument("--ledger", type=Path)
     parser.add_argument("--run-id")
@@ -36,9 +44,11 @@ def main() -> None:
     parser.add_argument("--rpm", type=int, default=25)
     parser.add_argument("--daily-budget", type=int, default=1200)
     parser.add_argument("--campaign-id", default="adaptive-normalization-v1")
-    parser.add_argument("--phase", choices=("smoke", "development"), default="development")
+    parser.add_argument("--phase", choices=("smoke", "development", "final"), default="development")
     args = parser.parse_args()
-    if args.adaptive_mapping:
+    if args.adaptive_mapping or args.adaptive_business:
+        if args.adaptive_business and (args.table_id or not 1 <= args.max_tables <= 8):
+            parser.error("adaptive business requires max-tables 1..8 and no table-id")
         if not all((args.profile, args.ledger, args.run_id, args.run_dir)):
             parser.error("--adaptive-mapping requires --profile, --ledger, --run-id and --run-dir")
         if args.ledger.resolve().is_relative_to(args.split_root.resolve()):
@@ -67,30 +77,42 @@ def main() -> None:
         )
     )
     adaptive_result = None
-    if args.adaptive_mapping:
+    if args.adaptive_mapping or args.adaptive_business:
         from datamate.inference.budget import CampaignPolicy, RequestBudget, register_campaign
         from datamate.inference.config import load_profile
         from datamate.preparation.orchestration import prepare_with_mapping_recovery
 
         selected_profile = load_profile(args.profile)
-        register_campaign(args.ledger, CampaignPolicy(args.campaign_id))
+        if args.campaign_policy:
+            configured_campaign = json.loads(args.campaign_policy.read_text(encoding="utf-8"))
+            campaign = CampaignPolicy(**configured_campaign)
+        else:
+            campaign = CampaignPolicy(args.campaign_id)
+        register_campaign(args.ledger, campaign)
         budget = RequestBudget(
             args.ledger,
             run_id=args.run_id,
             rpm=args.rpm,
             daily_limit=args.daily_budget,
             run_limit=args.request_budget,
-            campaign_id=args.campaign_id,
+            campaign_id=campaign.campaign_id,
             phase=args.phase,
         )
+        recovery = prepare_with_mapping_recovery
+        scope = {"table_id": args.table_id}
+        if args.adaptive_business:
+            from datamate.preparation.business_recovery import prepare_business_with_recovery
+
+            recovery = prepare_business_with_recovery
+            scope = {"max_tables": args.max_tables}
         adaptive_result = asyncio.run(
-            prepare_with_mapping_recovery(
+            recovery(
                 args.split_root,
                 args.business_id,
                 args.cache_root,
                 split_id=args.split_id,
                 run_dir=args.run_dir,
-                table_id=args.table_id,
+                **scope,
                 allow_model_calls=True,
                 profile=selected_profile,
                 budget=budget,

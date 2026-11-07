@@ -1,0 +1,5 @@
+{
+  "campaign_id": "native-relations-gemma-v1",
+  "total_limit": 20,
+  "phase_limits": {"smoke": 4, "development": 12, "final": 4}
+}

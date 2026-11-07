@@ -403,3 +403,20 @@ derived product codes, and checks base quantities against source quantities and 
 proofs. Plain signed integer text is independently checked without locale guessing;
 other textual numeric representations still require supported independent evidence.
 Absence of base quantity columns means complete base-unit totals remain unavailable.
+
+
+### Bounded recovery across a business
+
+`datamate.preparation.business_recovery.prepare_business_with_recovery` schedules
+source-marked mapping gaps on distinct tables, in deterministic dependency order.
+Accepted policies accumulate; each table is attempted once, without transport or
+format retries. Provider failures or exhausted shared budgets stop scheduling and
+retain the last audited artifact. Mapping success is reported separately from business
+qualification; unchanged unresolved issues remain visible.
+
+The shared preparation CLI adds `--adaptive-business --max-tables 3` in place of
+`--adaptive-mapping`. Supply explicit profile, ledger, run-id, run-dir, env-file and
+request/rate limits. `--campaign-policy` accepts a `CampaignPolicy` JSON configuration;
+`config/experiments/native_relations_google_campaign.json` fixes the approved experiment
+at 20 requests (smoke 4, development 12, final 4). Existing campaign limits cannot be
+reset by changing run IDs. Registry/replay modes remain offline and make no model calls.

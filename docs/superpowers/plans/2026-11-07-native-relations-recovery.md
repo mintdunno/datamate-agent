@@ -47,9 +47,9 @@ Files: operations.py, v2.py, projection.py, audit.py as required; qualified-runt
 ## Task 3 — Bounded business recovery
 
 Files: orchestration.py, existing preparation CLI, mapping.py and adaptive-flow tests.
-- [ ] Test multi-table progress, one selected unchanged issue attempted once, total request cap, failure retention and offline registry mode.
-- [ ] Add a bounded dependency-ordered wrapper around current mapping/registered-operation recovery; record issue reasons and outcomes.
-- [ ] Run focused checks and commit feat(preparation): bound business recovery by issue and request budgets.
+- [x] Test multi-table progress, one selected unchanged issue attempted once, total request cap, failure retention and offline registry mode.
+- [x] Add a bounded dependency-ordered wrapper around current mapping/registered-operation recovery; record issue reasons and outcomes.
+- [x] Run focused checks and commit feat(preparation): bound business recovery by issue and request budgets.
 
 ## Task 4 — Qualification campaign and report
 
