@@ -16,15 +16,16 @@ PROFILE_DIR = ROOT / "config" / "model_profiles"
 def test_profiles_load_without_credentials_or_model_weights(monkeypatch):
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     paths = sorted(PROFILE_DIR.glob("*.json"))
-    assert len(paths) == 4
+    assert len(paths) == 5
     profiles = [load_profile(path) for path in paths]
-    assert {profile.runtime for profile in profiles} == {"nim", "vllm"}
+    assert {profile.runtime for profile in profiles} == {"nim", "vllm", "compatible"}
     for profile in profiles:
         assert profile.native_tools
         assert profile.qualification == "unverified"
-        assert profile.context_window == 32768
-        assert profile.input_byte_limit == 24000
-        assert profile.max_tokens == 1024
+        if profile.runtime != "compatible":
+            assert profile.context_window == 32768
+            assert profile.input_byte_limit == 24000
+            assert profile.max_tokens == 1024
         if profile.runtime == "vllm":
             assert profile.revision and len(profile.revision) == 40
             assert profile.minimum_vram_gib > 8
@@ -96,3 +97,15 @@ def test_bootstrap_rejects_incomplete_run_before_executing(tmp_path):
     assert result.returncode == 2
     assert "--suite" in result.stderr
     assert list(tmp_path.iterdir()) == []
+
+
+def test_google_studio_gemma_profile_is_explicit_and_portable():
+    profile = load_profile(PROFILE_DIR / "google_gemma_4_26b_a4b_it.json")
+    assert profile.model_id == "gemma-4-26b-a4b-it"
+    assert profile.base_url == "https://generativelanguage.googleapis.com/v1beta/openai/"
+    assert profile.runtime == "compatible"
+    assert profile.streaming and profile.supports_streaming
+    assert not profile.force_output_tool
+    assert not profile.strict_tool_schema
+    assert profile.extra_body == {} and profile.temperature is None
+    assert profile.input_byte_limit == 56000 and profile.context_window == 65536

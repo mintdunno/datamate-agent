@@ -351,3 +351,18 @@ Validation diagnostics contain trusted field paths/error types, never rejected
 values. Strict tool schemas and forced output tools are separate backend features;
 unsupported parameters fail visibly and never trigger a silent fallback.
 No automatic format retry is enabled in the bounded mapping qualification.
+
+### Google AI Studio Gemma experiment
+
+`config/model_profiles/google_gemma_4_26b_a4b_it.json` selects
+`gemma-4-26b-a4b-it` through the Google OpenAI-compatible endpoint
+`https://generativelanguage.googleapis.com/v1beta/openai/`. Set `LLM_API_KEY`
+in an ignored `.env` and pass both `--profile` and `--env-file` explicitly. The
+profile uses streaming and automatic tool selection; the qualification probe
+returned HTTP500 for forced tool choice and valid typed output in automatic mode.
+This does not establish that forced tool calling is universally unsupported.
+Strict schemas are unqualified. No provider-specific thinking flag is sent, so
+thinking behavior is the provider default. Raw text may include inline thought
+markers; factual acceptance still requires the typed output tool and source checks.
+Google requests use a separate provider ledger, not the exhausted NIM smoke quota.
+This is an experimental cloud profile, not offline or competition qualification.
