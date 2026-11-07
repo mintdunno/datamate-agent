@@ -259,7 +259,7 @@ class StagedTable:
 @dataclass(frozen=True)
 class StructuralDecision:
     record_id: str
-    role: Literal["data", "header", "blank", "note", "summary", "unresolved"]
+    role: Literal["data", "header", "blank", "note", "metadata", "summary", "unresolved"]
     status: Literal["ACCEPTED", "UNRESOLVED"]
     evidence_refs: tuple[EvidenceRef, ...]
     anchor_scope: str | None = None

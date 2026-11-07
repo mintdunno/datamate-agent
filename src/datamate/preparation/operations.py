@@ -399,6 +399,14 @@ def classify_structure(
             role = "header"
         else:
             for marker in markers:
+                if marker.value == "preheader_key_value":
+                    from datamate.preparation.annotations import has_annotation_proof
+
+                    if marker.marker == record.record_id and has_annotation_proof(marker, bindings):
+                        role = "metadata"
+                        evidence += marker.evidence
+                        break
+                    continue
                 index = table.columns.index(marker.columns[0])
                 value = values[index] if index < len(values) else None
                 if not isinstance(value, str):

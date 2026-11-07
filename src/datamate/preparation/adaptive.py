@@ -555,7 +555,11 @@ async def propose_role_mapping(
 
     from datamate.inference.budget import RequestDeadlineExceeded
     from datamate.inference.client import inference_failure, inference_model
-    from datamate.preparation.mapping import mapping_prompt
+    from datamate.preparation.mapping import (
+        SourceMetadataProposal,
+        mapping_prompt,
+        metadata_request,
+    )
 
     if budget.rpm > 40:
         raise ValueError("adaptive provider rate cannot exceed 40 RPM")
@@ -572,7 +576,9 @@ async def propose_role_mapping(
     async with inference_model(
         profile, budget, transport=transport, max_retries=0, env_file=env_file
     ) as model:
-        agent = Agent(model, output_type=MappingProposal, retries=0)
+        metadata_only = metadata_request(table_profile, source_samples)
+        output_type = SourceMetadataProposal if metadata_only else MappingProposal
+        agent = Agent(model, output_type=output_type, retries=0)
         try:
             async with asyncio.timeout(profile.request_deadline_seconds):
                 result = await agent.run(
@@ -602,4 +608,8 @@ async def propose_role_mapping(
                 else "STREAM_INCOMPLETE"
             )
             raise PlanFormatError(code, diagnostic={"code": code, "phase": "provider"})
-        return result.output
+        return (
+            MappingProposal(source_metadata=result.output.source_metadata)
+            if metadata_only
+            else result.output
+        )

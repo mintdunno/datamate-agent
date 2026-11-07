@@ -346,6 +346,9 @@ class StructuredTools:
                             }
                         )
                         table["policy"]["completeness"] = "single_source_table_observations"
+                        table["policy"]["source_annotations"] = source_policy.get(
+                            "source_annotations", []
+                        )
                     if table["table_id"] in relations:
                         raise ValueError("duplicate qualified relation")
                     relations[table["table_id"]] = table

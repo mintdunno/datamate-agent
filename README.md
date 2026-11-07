@@ -465,3 +465,14 @@ persisted receipts and exact view definitions reject post-audit changes.
 
 Current evidence and the blocked sales-sheet canary are recorded in the
 [source-field report](docs/engineering/qualified_source_fields_report.md).
+
+
+Unresolved pre-header records are marked as unresolved_preheader_metadata and
+scheduled before column-role gaps. The SML receives bounded source witnesses and
+a metadata-only output schema. It may select a key/value annotation, while local
+validation checks the exact source/profile, pre-header position, established
+header, populated cells and raw witnesses. Accepted annotations retain source
+provenance and unresolved scope semantics; they never set transaction statuses
+or establish whole-business coverage. Invalid proposals retain the prior artifact.
+Independent audit rebuilds annotation receipts and checks the copy exposed to SQL
+tools before source-field publication.

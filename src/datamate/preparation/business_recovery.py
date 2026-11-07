@@ -30,7 +30,9 @@ def _inventory(inputs) -> tuple:
 
 def _tables(prepared: PreparedBusiness, attempted: set[str]) -> list[str]:
     candidates = {
-        i["scope"] for i in prepared.catalog.get("issues", ()) if i["kind"] == "unmapped_role"
+        i["scope"]
+        for i in prepared.catalog.get("issues", ())
+        if i["kind"] in {"unmapped_role", "unresolved_preheader_metadata"}
     } - attempted
     if not candidates:
         return []
@@ -48,6 +50,11 @@ def _tables(prepared: PreparedBusiness, attempted: set[str]) -> list[str]:
             roles[table].add(role)
 
     def priority(table):
+        if any(
+            i["scope"] == table and i["kind"] == "unresolved_preheader_metadata"
+            for i in prepared.catalog.get("issues", ())
+        ):
+            return -1, table
         assigned = roles[table]
         transaction = "quantity" in assigned and assigned & {"order_id", "line_net_amount", "unit"}
         named_units = "unit" in assigned and assigned & {"product_id", "product_name"}

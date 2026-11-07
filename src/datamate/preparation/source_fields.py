@@ -244,7 +244,10 @@ def project_source_fields(db, bindings: SemanticBindings):
                 effective_header(profile, c) for c in profile.columns if c.column_id == column
             )
         scope = source_scope(profile.table_id)
+        from datamate.preparation.annotations import annotations_for_table
+
         metadata = {
+            "source_annotations": annotations_for_table(db, profile.table_id),
             "version": SOURCE_FIELDS_VERSION,
             "kind": "source_fields",
             "source_table_id": profile.table_id,
@@ -354,6 +357,18 @@ def audit_source_fields(db, bindings: SemanticBindings, text_issues):
         findings.append(
             AuditFinding(
                 "applicability", scope, "PASS" if valid else "FAIL", "accepted source field roles"
+            )
+        )
+        from datamate.preparation.annotations import annotations_for_table
+
+        findings.append(
+            AuditFinding(
+                "source_annotation_context",
+                scope,
+                "PASS"
+                if metadata.get("source_annotations", []) == annotations_for_table(db, source)
+                else "FAIL",
+                "solver-visible annotation context matches source receipts",
             )
         )
         coverage = _coverage(db, (source,), bindings)

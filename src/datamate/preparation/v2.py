@@ -647,9 +647,11 @@ def _build(workspace: Path, *, inputs: BusinessInputs, policy: PreparationPolicy
         bindings = _source_roles(
             profiles, clauses, policy.binding_proposals, readme_roles=policy.readme_roles
         )
+        from datamate.preparation.annotations import enrich_source_annotations
         from datamate.preparation.native_relations import enrich_native_relations
 
         finalize_text_state(db, bindings)
+        bindings = enrich_source_annotations(db, profiles, bindings)
         bindings = enrich_native_relations(db, profiles, bindings)
         if bindings.entries:
             db.executemany(

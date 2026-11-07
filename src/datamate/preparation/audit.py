@@ -58,7 +58,7 @@ def _optional_tables(db: DuckDBPyConnection) -> tuple[str, ...]:
         for row in db.execute(
             "SELECT table_name FROM information_schema.tables WHERE table_schema='meta' "
             "AND table_name IN ('bindings','transform_events','text_integrity','profiles',"
-            "'source_field_descriptors') ORDER BY table_name"
+            "'source_field_descriptors','source_annotations') ORDER BY table_name"
         ).fetchall()
     )
 
@@ -573,6 +573,11 @@ def audit_prepared(db: DuckDBPyConnection, bindings: SemanticBindings) -> AuditR
     text_issues = audit_text_state(db)
     accounting, data_count = _raw_accounting(db)
     findings = [accounting, _fact_lineage(db)]
+    from datamate.preparation.annotations import audit_source_annotations
+
+    annotation_check = audit_source_annotations(db, bindings)
+    if annotation_check.status != "NOT_APPLICABLE":
+        findings.append(annotation_check)
     native_check = _native_relations_audit(db, bindings)
     if native_check.status != "NOT_APPLICABLE":
         findings.append(native_check)

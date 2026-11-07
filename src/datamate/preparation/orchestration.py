@@ -23,6 +23,7 @@ from datamate.preparation.adaptive import (
     cleaning_plan_proposer,
     recover_issue,
 )
+from datamate.preparation.annotations import enrich_source_annotations
 from datamate.preparation.catalog import compile_clauses
 from datamate.preparation.discovery import discover_business
 from datamate.preparation.models import EvidenceRef, NormalizationIssue, TableProfile
@@ -195,6 +196,9 @@ async def prepare_with_recovery(
         from datamate.preparation.native_relations import enrich_native_relations
 
         with duckdb.connect(str(baseline.database), read_only=True) as source_db:
+            full_bindings = enrich_source_annotations(
+                source_db, profiles, full_bindings, record_receipts=False
+            )
             full_bindings = enrich_native_relations(
                 source_db, profiles, full_bindings, record_issues=False
             )
@@ -424,6 +428,9 @@ async def prepare_with_mapping_recovery(
         from datamate.preparation.native_relations import enrich_native_relations
 
         with duckdb.connect(str(baseline.database), read_only=True) as source_db:
+            bindings = enrich_source_annotations(
+                source_db, profiles, bindings, record_receipts=False
+            )
             bindings = enrich_native_relations(source_db, profiles, bindings, record_issues=False)
         if bindings.digest != baseline.catalog["bindings_digest"]:
             raise ValueError("source bindings changed after registry preparation")
@@ -434,7 +441,11 @@ async def prepare_with_mapping_recovery(
         candidates = [
             p
             for p in profiles
-            if any(i.kind == "unmapped_role" and i.scope == p.table_id for i in issues)
+            if any(
+                i.kind in {"unmapped_role", "unresolved_preheader_metadata"}
+                and i.scope == p.table_id
+                for i in issues
+            )
         ]
         if table_id is not None:
             candidates = [p for p in candidates if p.table_id == table_id]
@@ -450,6 +461,16 @@ async def prepare_with_mapping_recovery(
         trace["issues"] = [i.model_dump(mode="json") for i in issues if i.scope == table_id]
         if not allow_model_calls:
             return finish("PARTIAL", "Model calls explicitly disabled; schema gaps remain marked.")
+        metadata_issue = any(
+            i.scope == table_id and i.kind == "unresolved_preheader_metadata" for i in issues
+        )
+        source_samples = sample_mapping_sources(
+            baseline.database,
+            profiles,
+            selected_profile,
+            max_bytes=max(1000, profile.input_byte_limit // 4),
+            max_tables=1 if metadata_issue else 8,
+        )
         try:
             proposal = await propose_role_mapping(
                 profile,
@@ -459,12 +480,7 @@ async def prepare_with_mapping_recovery(
                 bindings,
                 transport=transport,
                 env_file=env_file,
-                source_samples=sample_mapping_sources(
-                    baseline.database,
-                    profiles,
-                    selected_profile,
-                    max_bytes=max(1000, profile.input_byte_limit // 4),
-                ),
+                source_samples=source_samples,
             )
         except Exception as error:
             # This is an explicit proposal boundary: retain results and record failure,
@@ -484,8 +500,16 @@ async def prepare_with_mapping_recovery(
             return finish("PARTIAL", "Mapping proposal failed; baseline retained.")
         trace["proposal"] = proposal.model_dump(mode="json")
         unchanged()
-        if not proposal.mappings:
+        if not proposal.mappings and not proposal.source_metadata:
             return finish("PARTIAL", "Model proposed no source-backed mapping.")
+        visible_preamble = {
+            row["record_id"]
+            for table in source_samples["tables"]
+            if table["table_id"] == table_id
+            for row in table.get("preamble_rows", ())
+        }
+        if any(item.record_id not in visible_preamble for item in proposal.source_metadata):
+            return finish("PARTIAL", "Annotation proposal escaped sampled pre-header evidence.")
         try:
             proposed = mapping_bindings(proposal, selected_profile, clauses)
         except ValueError as error:
@@ -504,6 +528,10 @@ async def prepare_with_mapping_recovery(
             (*policy.binding_proposals, *proposed),
             readme_roles=policy.readme_roles,
         )
+        with duckdb.connect(str(baseline.database), read_only=True) as source_db:
+            reviewed = enrich_source_annotations(
+                source_db, profiles, reviewed, record_receipts=False
+            )
         accepted_ids = {b.binding_id for b in reviewed.accepted}
         accepted = tuple(b for b in proposed if b.binding_id in accepted_ids)
         trace["mapping_validation"] = [
