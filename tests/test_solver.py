@@ -60,7 +60,8 @@ def test_mock_agent_executes_sql_and_returns_valid_answer(tmp_path, streaming):
     assert result.error_code is None
 
 
-def test_explicit_rule_reads_satisfy_source_gate_and_queries_are_traced(tmp_path):
+@pytest.mark.parametrize("prefetch", [False, True])
+def test_explicit_rule_reads_satisfy_source_gate_and_queries_are_traced(tmp_path, prefetch):
     path = tmp_path / "db.duckdb"
     with duckdb.connect(str(path)) as db:
         db.execute("CREATE TABLE sales(amount INTEGER)")
@@ -101,6 +102,13 @@ def test_explicit_rule_reads_satisfy_source_gate_and_queries_are_traced(tmp_path
 
     def respond(messages, info):
         calls.append(1)
+        if prefetch:
+            assert "All records are valid" in str(messages)
+            if len(calls) == 1:
+                return ModelResponse(
+                    parts=[ToolCallPart("execute_sql", {"sql": "SELECT sum(amount) FROM sales"})]
+                )
+            return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, {"answer": 5})])
         if len(calls) == 1:
             assert "All records are valid" not in str(messages)
             return ModelResponse(parts=[ToolCallPart("get_rules", {"scope": "business"})])
@@ -114,15 +122,21 @@ def test_explicit_rule_reads_satisfy_source_gate_and_queries_are_traced(tmp_path
 
     result = asyncio.run(
         solve_question(
-            Question(id="q", business_id="shop", question="Total?", as_of_date="2025-01-01"),
+            Question(
+                id="q", business_id="shop", question="Total from sales?", as_of_date="2025-01-01"
+            ),
             tools,
             FunctionModel(respond),
+            prefetch_source_context=prefetch,
         )
     )
+    assert len(calls) == (2 if prefetch else 4)
     assert result.answer["answer"] == 5
     assert {"0", "1"} <= set(result.evidence_ids)
-    assert result.tool_events[2]["sql"] == "SELECT sum(amount) FROM sales"
-    assert result.tool_events[2]["timestamp"].tzinfo is not None
+    sql_events = [e for e in result.tool_events if e["tool_name"] == "execute_sql"]
+    assert len(sql_events) == 1
+    assert sql_events[0]["sql"] == "SELECT sum(amount) FROM sales"
+    assert sql_events[0]["timestamp"].tzinfo is not None
 
 
 @pytest.mark.parametrize("sql,value", [("SELECT 1", 999), ("SELECT sum(amount) FROM sales", 999)])

@@ -34,6 +34,8 @@ Choose the output tool for the answer type. IDs and types are bound by the harne
 For number/percent, answer is a JSON number, never a string or a JSON-encoded object.
 Never return a substantive answer without a successful, non-truncated data query as evidence.
 Read split rulebook AND business README rules using get_rules; its pages disclose omissions.
+source_context contains prefetched get_rules/describe_table results; use them without repeating
+the same calls. Fetch further applicable pages only when needed. Numeric answers still require SQL.
 Use search_schema to find columns, describe_table for physical IDs, inspect_values for text formats.
 Use SQL aliases for meaningful outputs; scalar final values must appear exactly in query results.
 For rankings sort the requested metric descending, then code ascending; count all valid candidates.
@@ -114,6 +116,7 @@ async def solve_question(
     total_token_budget: int = 24000,
     tool_call_limit: int = 16,
     streaming: bool = False,
+    prefetch_source_context: bool = False,
 ) -> SolveResult:
     started = time.monotonic()
     agent = Agent(
@@ -231,6 +234,31 @@ async def solve_question(
             pass
 
     try:
+        if prefetch_source_context:
+            source_rules = {
+                scope: recoverable(tools.get_rules)(scope=scope, limit=10)
+                for scope in ("split", "business")
+            }
+            schemas = []
+            for table_id in sorted(tools.tables):
+                if table_id not in question.question:
+                    continue
+                description = recoverable(tools.describe_table)(table_id)
+                # Supply schema/context, never record counts as shortcut answer evidence.
+                schema = {
+                    key: description[key]
+                    for key in ("table_id", "columns", "sources")
+                    if key in description
+                }
+                schema["policy"] = {
+                    key: value
+                    for key, value in (description.get("policy") or {}).items()
+                    if key not in {"rows", "row_count", "declared_data_rows"}
+                }
+                schemas.append(schema)
+                if len(schemas) == 2:
+                    break
+            payload["source_context"] = {"rules": source_rules, "tables": schemas}
         result = await asyncio.wait_for(
             agent.run(
                 json.dumps(payload, ensure_ascii=False, separators=(",", ":")),

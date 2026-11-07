@@ -488,3 +488,9 @@ tools before source-field publication.
 The solving runtime and batch runner honor the model profile's streaming flag
 through PydanticAI streamed tool calls. Streaming uses the existing request/token
 ledger, deadlines and per-question limits; it does not switch models or backends.
+
+`solve_question(..., prefetch_source_context=True)` optionally loads bounded split
+and business rules plus schemas for at most two allowed table IDs explicitly
+named in the question. It uses the existing traced tools and discloses omitted
+rules. Record counts and previous query answers are excluded; a successful SQL
+query remains mandatory for numeric output. The default is `False`.
