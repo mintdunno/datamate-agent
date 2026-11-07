@@ -59,7 +59,7 @@ async def inference_model(
     *,
     env_file: Path | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
-    timeout: float = 90,
+    timeout: float | None = None,
     max_retries: int = 2,
 ):
     if not profile.native_tools:
@@ -67,11 +67,24 @@ async def inference_model(
     if profile.runtime == "nim" and (budget.rpm > 40 or budget.daily_limit > 10000):
         raise ValueError("configured budget exceeds NIM provider limits")
     inner = BudgetTransport(
-        transport or httpx.AsyncHTTPTransport(retries=0), budget, max_retries=max_retries
+        transport or httpx.AsyncHTTPTransport(retries=0),
+        budget,
+        max_retries=max_retries,
+        deadline_seconds=profile.request_deadline_seconds,
+    )
+    timeouts = (
+        httpx.Timeout(timeout)
+        if timeout is not None
+        else httpx.Timeout(
+            connect=profile.connect_timeout_seconds,
+            read=profile.read_timeout_seconds,
+            write=profile.write_timeout_seconds,
+            pool=profile.pool_timeout_seconds,
+        )
     )
     async with httpx.AsyncClient(
         transport=GuardedTransport(inner, profile),
-        timeout=timeout,
+        timeout=timeouts,
         follow_redirects=False,
     ) as http_client:
         client = AsyncOpenAI(
@@ -79,15 +92,15 @@ async def inference_model(
             base_url=profile.base_url,
             http_client=http_client,
             max_retries=0,
-            timeout=timeout,
+            timeout=timeouts,
         )
         provider = OpenAIProvider(openai_client=client)
         capabilities = OpenAIModelProfile(
             supports_tools=True,
             supports_json_schema_output=False,
             supports_json_object_output=False,
-            openai_supports_strict_tool_definition=False,
-            supports_forced_tool_choice=False,
+            openai_supports_strict_tool_definition=profile.strict_tool_schema,
+            supports_forced_tool_choice=profile.force_output_tool,
             openai_chat_supports_max_completion_tokens=profile.max_tokens_field
             == "max_completion_tokens",
             openai_chat_send_back_thinking_parts=False,

@@ -37,6 +37,15 @@ class ModelProfile(ContractModel):
     top_p: float | None = None
     extra_body: dict = Field(default_factory=dict)
     native_tools: bool = True
+    streaming: bool = False
+    supports_streaming: bool = False
+    force_output_tool: bool = False
+    strict_tool_schema: bool = False
+    connect_timeout_seconds: float = Field(default=15, gt=0, le=3600)
+    read_timeout_seconds: float = Field(default=300, gt=0, le=3600)
+    write_timeout_seconds: float = Field(default=30, gt=0, le=3600)
+    pool_timeout_seconds: float = Field(default=10, gt=0, le=3600)
+    request_deadline_seconds: float = Field(default=360, gt=0, le=7200)
     quantization: str | None = None
     minimum_vram_gib: float | None = Field(default=None, gt=0)
     dtype: Literal["auto", "bfloat16", "float16", "float32"] = "auto"
@@ -54,6 +63,10 @@ class ModelProfile(ContractModel):
 
     @model_validator(mode="after")
     def supported_settings(self):
+        if self.streaming and not self.supports_streaming:
+            raise ValueError("streaming requested but not declared supported by selected backend")
+        if (self.force_output_tool or self.strict_tool_schema) and not self.native_tools:
+            raise ValueError("structured output controls require declared native tool support")
         url = urlsplit(self.base_url)
         if (
             url.scheme not in {"http", "https"}

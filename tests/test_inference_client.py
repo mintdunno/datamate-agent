@@ -173,3 +173,116 @@ def test_campaign_context_rejection_does_not_consume_attempt(tmp_path):
     assert calls == []
     assert budget.snapshot()["run_attempts"] == 0
     assert budget.snapshot()["campaign_attempts"] == 0
+
+
+def test_streaming_requires_explicit_backend_support():
+    with pytest.raises(ValueError, match="stream"):
+        profile(streaming=True)
+    configured = profile(streaming=True, supports_streaming=True)
+    assert configured.read_timeout_seconds == 300
+    assert configured.request_deadline_seconds == 360
+
+
+def test_typed_stream_drains_usage_and_uses_configured_timeouts(tmp_path):
+    from pydantic_ai import UsageLimits
+    from test_streaming_transport import Chunks, sse
+
+    from datamate.preparation.mapping import MappingProposal
+
+    budget = RequestBudget(tmp_path / "ledger.sqlite", run_id="typed-stream", run_limit=1)
+    requests = []
+
+    def respond(request):
+        body = json.loads(request.content)
+        requests.append(body)
+        assert request.extensions["timeout"]["connect"] == 15
+        assert request.extensions["timeout"]["read"] == 300
+        name = body["tools"][0]["function"]["name"]
+        chunks = [
+            sse(
+                {
+                    "id": "stream",
+                    "created": 0,
+                    "model": "selected-model",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "role": "assistant",
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call1",
+                                        "type": "function",
+                                        "function": {"name": name, "arguments": '{"mappings":'},
+                                    }
+                                ],
+                            },
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+            ),
+            sse(
+                {
+                    "id": "stream",
+                    "created": 0,
+                    "model": "selected-model",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "tool_calls": [{"index": 0, "function": {"arguments": "[]}"}}]
+                            },
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+            ),
+            sse(
+                {
+                    "id": "stream",
+                    "created": 0,
+                    "model": "selected-model",
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+                }
+            ),
+            sse(
+                {
+                    "id": "stream",
+                    "created": 0,
+                    "model": "selected-model",
+                    "choices": [],
+                    "usage": {"prompt_tokens": 14, "completion_tokens": 8},
+                }
+            ),
+            b"data: [DONE]\n\n",
+        ]
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, stream=Chunks(chunks)
+        )
+
+    async def run():
+        async def drain(ctx, events):
+            async for _event in events:
+                pass
+
+        async with inference_model(
+            profile(streaming=True, supports_streaming=True, force_output_tool=True),
+            budget,
+            transport=httpx.MockTransport(respond),
+            max_retries=0,
+        ) as model:
+            result = await Agent(model, output_type=MappingProposal, retries=0).run(
+                "Return empty mappings",
+                event_stream_handler=drain,
+                usage_limits=UsageLimits(request_limit=1),
+            )
+            assert not result.output.mappings
+
+    asyncio.run(run())
+    assert len(requests) == 1 and requests[0]["stream"] is True
+    assert requests[0]["stream_options"]["include_usage"] is True
+    assert requests[0]["tool_choice"] == "required"
+    assert budget.snapshot()["run_output_tokens"] == 8
+    assert budget.snapshot()["request_traces"][0]["completed"]

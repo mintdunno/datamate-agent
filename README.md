@@ -321,3 +321,22 @@ The final transport still checks the complete serialized request, including tool
 and overhead, before any HTTP attempt. Its byte-based context estimate remains
 conservative; exact model-tokenizer counting is not implemented by this change.
 No prior run profile, model, reasoning mode, or budget is silently modified.
+
+### Streaming and request deadlines
+
+Profiles explicitly select `streaming` and declare `supports_streaming`; unsupported
+streaming fails instead of falling back. Existing profiles remain nonstreaming.
+`force_output_tool` and `strict_tool_schema` describe requested backend capabilities;
+they must be qualified for the selected endpoint, not inferred from model size.
+Default per-phase HTTP timeouts are connect15/read300/write30/pool10 seconds.
+`request_deadline_seconds` defaults to360 and bounds one request including budget
+wait and streamed body consumption. All are configurable, and token/request
+budgets remain independent of timeout settings.
+
+The shared ledger stores at most the last ten request timing traces in snapshots: rate
+limiter wait, optional TCP/TLS timing, headers/body/first output timing, finish reason,
+completion state and provider usage when reported. SSE chunks are forwarded immediately;
+usage is recorded once at EOF/close. Missing usage stays unavailable. Partial streams
+are not retried. Neither authorization headers nor generated/source text is stored in
+these timing traces. Slow first output does not identify provider queue vs model
+prefill/reasoning without additional provider metrics.

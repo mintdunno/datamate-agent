@@ -1,6 +1,7 @@
 """Persistent, process-safe API attempt accounting and bounded retries."""
 
 import asyncio
+import codecs
 import json
 import sqlite3
 import time
@@ -56,6 +57,10 @@ def _initialize_schema(db: sqlite3.Connection) -> None:
             run_id TEXT NOT NULL, at REAL NOT NULL, status INTEGER NOT NULL,
             finish_reason TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS request_traces (
+            run_id TEXT NOT NULL, at REAL NOT NULL, trace_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS traces_run ON request_traces(run_id, at);
         CREATE TABLE IF NOT EXISTS campaigns (
             campaign_id TEXT PRIMARY KEY, total_limit INTEGER NOT NULL,
             phase_limits TEXT NOT NULL
@@ -244,6 +249,14 @@ class RequestBudget:
                 (self.run_id, time.time(), status, finish),
             )
 
+    def record_trace(self, trace: dict) -> None:
+        """Persist timing/control metadata only, never headers or model text."""
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO request_traces VALUES (?,?,?)",
+                (self.run_id, time.time(), json.dumps(trace, allow_nan=False)),
+            )
+
     def snapshot(self) -> dict:
         now = time.time()
         start = self._day_start(now)
@@ -298,7 +311,13 @@ class RequestBudget:
                     (self.run_id,),
                 )
             )
+            traces = db.execute(
+                "SELECT trace_json FROM request_traces WHERE run_id=? "
+                "ORDER BY at DESC,rowid DESC LIMIT 10",
+                (self.run_id,),
+            ).fetchall()
         return {
+            "request_traces": [json.loads(row[0]) for row in reversed(traces)],
             "day_attempts": day_attempts,
             "day_remaining": max(0, self.daily_limit - day_attempts),
             "run_remaining": max(0, self.run_limit - run_attempts),
@@ -332,44 +351,287 @@ def _retry_after(value: str | None) -> float | None:
             return None
 
 
+class RequestDeadlineExceeded(TimeoutError):
+    """Absolute request deadline, distinct from socket inactivity timeouts."""
+
+
+def _transport_failure(error: BaseException) -> str:
+    if isinstance(error, BudgetExceeded):
+        return "BUDGET_EXCEEDED"
+    if isinstance(error, RequestDeadlineExceeded):
+        return "DEADLINE_EXCEEDED"
+    for kind, code in (
+        (httpx.ConnectTimeout, "TIMEOUT_CONNECT"),
+        (httpx.ReadTimeout, "TIMEOUT_READ"),
+        (httpx.WriteTimeout, "TIMEOUT_WRITE"),
+        (httpx.PoolTimeout, "TIMEOUT_POOL"),
+    ):
+        if isinstance(error, kind):
+            return code
+    if isinstance(error, asyncio.CancelledError):
+        return "CANCELLED"
+    return "NETWORK_ERROR"
+
+
+async def _bounded(operation, deadline):
+    if deadline is None:
+        return await operation()
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise RequestDeadlineExceeded("request deadline exceeded")
+    try:
+        async with asyncio.timeout(remaining):
+            return await operation()
+    except TimeoutError as error:
+        raise RequestDeadlineExceeded("request deadline exceeded") from error
+
+
+class _Observation:
+    def __init__(self, budget, requested_stream):
+        self.budget, self.started = budget, time.monotonic()
+        self.sent = None
+        self.status = None
+        self.finish_reason = None
+        self.usage = None
+        self.done = False
+        self.trace = {
+            "stream_requested": requested_stream,
+            "stream_received": False,
+            "stream_done": False,
+            "first_body_byte_seconds": None,
+            "first_delta_seconds": None,
+            "first_content_seconds": None,
+            "first_tool_seconds": None,
+            "first_reasoning_seconds": None,
+            "headers_wait_seconds": None,
+            "rate_limit_wait_seconds": None,
+            "connect_seconds": None,
+            "tls_seconds": None,
+            "has_tool_calls": False,
+            "has_content": False,
+            "completed": False,
+            "failure_code": None,
+        }
+        self.connections = {}
+
+    async def network_event(self, name, info):
+        for event, output in (("connect_tcp", "connect_seconds"), ("start_tls", "tls_seconds")):
+            if name.endswith(event + ".started"):
+                self.connections[event] = time.monotonic()
+            elif name.endswith(event + ".complete") and event in self.connections:
+                self.trace[output] = time.monotonic() - self.connections[event]
+
+    def payload(self, data):
+        if not isinstance(data, dict):
+            return
+        usage = data.get("usage")
+        if isinstance(usage, dict):
+            tokens = usage.get("prompt_tokens"), usage.get("completion_tokens")
+            if all(type(v) is int and 0 <= v < 2**63 for v in tokens):
+                self.usage = tokens
+            details = usage.get("completion_tokens_details")
+            reasoning = details.get("reasoning_tokens") if isinstance(details, dict) else None
+            if type(reasoning) is int and reasoning >= 0:
+                self.trace["reasoning_tokens"] = reasoning
+        if data.get("error"):
+            self.trace["provider_stream_error"] = True
+        choices = data.get("choices", [])
+        if not isinstance(choices, list):
+            return
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            finish = choice.get("finish_reason")
+            if finish in {"stop", "length", "tool_calls", "function_call", "content_filter"}:
+                self.finish_reason = finish
+            delta = choice.get("delta", choice.get("message", {}))
+            if not isinstance(delta, dict):
+                continue
+            for delta_field, timing in (
+                ("content", "first_content_seconds"),
+                ("tool_calls", "first_tool_seconds"),
+                ("reasoning_content", "first_reasoning_seconds"),
+                ("reasoning", "first_reasoning_seconds"),
+            ):
+                if delta.get(delta_field):
+                    elapsed = time.monotonic() - self.sent
+                    if self.trace[timing] is None:
+                        self.trace[timing] = elapsed
+                    if self.trace["first_delta_seconds"] is None:
+                        self.trace["first_delta_seconds"] = elapsed
+                    if delta_field == "tool_calls":
+                        self.trace["has_tool_calls"] = True
+                    if delta_field == "content":
+                        self.trace["has_content"] = True
+
+    def complete(self, *, completed=False, error=None, code=None):
+        if self.done:
+            return
+        self.done = True
+        self.trace.update(
+            completed=completed,
+            http_status=self.status,
+            finish_reason=self.finish_reason,
+            elapsed_seconds=time.monotonic() - self.started,
+            failure_code=_transport_failure(error) if error else code,
+        )
+        if self.usage is not None:
+            self.budget.record_usage(*self.usage)
+        if self.status is not None:
+            self.budget.record_response(self.status, self.finish_reason)
+        self.budget.record_trace(self.trace)
+
+
+class _ObservedStream(httpx.AsyncByteStream):
+    """Forward original bytes; decode only a bounded copy of each SSE event."""
+
+    def __init__(self, inner, observation, deadline):
+        self.inner, self.observation, self.deadline = inner, observation, deadline
+        self.decoder = codecs.getincrementaldecoder("utf-8")()
+        self.buffer = ""
+        self.data = []
+        self.closed = False
+
+    def event(self):
+        payload = "\n".join(self.data)
+        self.data.clear()
+        if payload == "[DONE]":
+            self.observation.trace["stream_done"] = True
+        elif payload:
+            try:
+                self.observation.payload(json.loads(payload))
+            except (ValueError, TypeError):
+                trace = self.observation.trace
+                trace["malformed_events"] = trace.get("malformed_events", 0) + 1
+
+    def consume(self, text, final=False):
+        self.buffer += text
+        if len(self.buffer) + sum(map(len, self.data)) > 1024 * 1024:
+            raise httpx.RemoteProtocolError("SSE event exceeds bounded parser capacity")
+        while "\n" in self.buffer:
+            line, self.buffer = self.buffer.split("\n", 1)
+            line = line.rstrip("\r")
+            if not line:
+                self.event()
+            elif line.startswith("data:"):
+                self.data.append(line[5:].removeprefix(" "))
+        if final:
+            if self.buffer.startswith("data:"):
+                self.data.append(self.buffer[5:].removeprefix(" ").rstrip("\r"))
+            self.buffer = ""
+            self.event()
+
+    async def __aiter__(self):
+        iterator = self.inner.__aiter__()
+        try:
+            while True:
+                try:
+                    chunk = await _bounded(lambda: anext(iterator), self.deadline)
+                except StopAsyncIteration:
+                    break
+                if chunk and self.observation.trace["first_body_byte_seconds"] is None:
+                    self.observation.trace["first_body_byte_seconds"] = (
+                        time.monotonic() - self.observation.sent
+                    )
+                self.consume(self.decoder.decode(chunk))
+                yield chunk
+            self.consume(self.decoder.decode(b"", final=True), final=True)
+            complete = (
+                self.observation.trace["stream_done"] or self.observation.finish_reason is not None
+            )
+            self.observation.complete(
+                completed=complete, code=None if complete else "STREAM_INCOMPLETE"
+            )
+        except BaseException as error:
+            self.observation.complete(error=error)
+            raise
+        finally:
+            await self.aclose()
+
+    async def aclose(self):
+        if not self.closed:
+            self.closed = True
+            self.observation.complete(code="STREAM_CLOSED_EARLY")
+            await self.inner.aclose()
+
+
 class BudgetTransport(httpx.AsyncBaseTransport):
     def __init__(
-        self, inner: httpx.AsyncBaseTransport, budget: RequestBudget, *, max_retries: int = 2
+        self,
+        inner: httpx.AsyncBaseTransport,
+        budget: RequestBudget,
+        *,
+        max_retries: int = 2,
+        deadline_seconds: float | None = None,
     ) -> None:
         if max_retries < 0:
             raise ValueError("max_retries must be non-negative")
         if budget.campaign_id is not None and max_retries > 1:
             raise ValueError("campaign permits at most one transport retry")
-        self.inner = inner
-        self.budget = budget
-        self.max_retries = max_retries
+        if deadline_seconds is not None and deadline_seconds <= 0:
+            raise ValueError("request deadline must be positive")
+        self.inner, self.budget, self.max_retries = inner, budget, max_retries
+        self.deadline_seconds = deadline_seconds
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        try:
+            requested_stream = json.loads(request.content).get("stream") is True
+        except (ValueError, AttributeError, TypeError):
+            requested_stream = False
         for attempt in range(self.max_retries + 1):
-            await self.budget.acquire()
+            obs = _Observation(self.budget, requested_stream)
+            deadline = (
+                obs.started + self.deadline_seconds if self.deadline_seconds is not None else None
+            )
+            previous = request.extensions.get("trace")
+
+            async def network_event(name, info, observer=obs, prior=previous):
+                await observer.network_event(name, info)
+                if prior is not None:
+                    await prior(name, info)
+
+            request.extensions["trace"] = network_event
+            response = None
             try:
-                response = await self.inner.handle_async_request(request)
-            except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError):
-                if attempt == self.max_retries:
+                await _bounded(self.budget.acquire, deadline)
+                obs.sent = time.monotonic()
+                obs.trace["rate_limit_wait_seconds"] = obs.sent - obs.started
+                response = await _bounded(
+                    lambda: self.inner.handle_async_request(request), deadline
+                )
+                obs.status = response.status_code
+                obs.trace["headers_wait_seconds"] = time.monotonic() - obs.sent
+                is_sse = (
+                    response.headers.get("content-type", "").split(";", 1)[0].strip()
+                    == "text/event-stream"
+                )
+                obs.trace["stream_received"] = is_sse
+                if is_sse and 200 <= response.status_code < 300:
+                    response.stream = _ObservedStream(response.stream, obs, deadline)
+                    return response
+                await _bounded(response.aread, deadline)
+                try:
+                    obs.payload(json.loads(response.content))
+                except (ValueError, AttributeError, TypeError):
+                    pass
+                obs.complete(completed=True)
+            except BaseException as error:
+                obs.complete(error=error)
+                if (
+                    not isinstance(
+                        error,
+                        (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError),
+                    )
+                    or attempt == self.max_retries
+                ):
                     raise
                 await asyncio.sleep(min(2**attempt, 10))
                 continue
-            await response.aread()
-            finish = None
-            try:
-                data = json.loads(response.content)
-                usage = data.get("usage", {})
-                tokens = usage.get("prompt_tokens"), usage.get("completion_tokens")
-                if all(type(value) is int and value >= 0 for value in tokens):
-                    self.budget.record_usage(*tokens)
-                choices = data.get("choices", [])
-                if isinstance(choices, list) and choices and isinstance(choices[0], dict):
-                    finish = choices[0].get("finish_reason")
-            except (ValueError, AttributeError, TypeError):
-                pass
-            self.budget.record_response(
-                response.status_code, finish if isinstance(finish, str) else None
-            )
+            finally:
+                if previous is None:
+                    request.extensions.pop("trace", None)
+                else:
+                    request.extensions["trace"] = previous
             if (
                 response.status_code not in (408, 429, 500, 502, 503, 504)
                 or attempt == self.max_retries

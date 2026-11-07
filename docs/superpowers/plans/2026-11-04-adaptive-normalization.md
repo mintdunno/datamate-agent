@@ -815,3 +815,10 @@ Use explicit profile/caller budgets instead; preserve full-request guards, sourc
 validation, output reserve, omission accounting and shared API budget. Historic
 run profiles remain frozen. Exact tokenizer counting is separate, not claimed by
 this change. No live requests are required to qualify configurable byte budgets.
+
+2026-11-07 approved continuation: (1) incremental SSE accounting and timing with
+profile-specific HTTP phases/absolute deadline; (2) compact complete source documents,
+short citation aliases, bounded raw samples, typed streaming output and distinct
+failure diagnostics; (3) qualification using at most two remaining smoke HTTP
+attempts, no quota reset/increase. Offline fixtures precede provider calls. Stop
+after this bounded qualification; failures remain PARTIAL, not a model-quality claim.
