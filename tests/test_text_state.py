@@ -1,6 +1,7 @@
 """Receipts preserve raw evidence and require complete declared key relations."""
 
 import hashlib
+import json
 import sqlite3
 from types import SimpleNamespace
 
@@ -9,6 +10,7 @@ import pytest
 
 from datamate.preparation.models import (
     BusinessInputs,
+    RawRecord,
     SemanticBindings,
     SourceFile,
     SourceRow,
@@ -205,3 +207,56 @@ def test_all_foreign_key_namespaces_must_agree(tmp_path):
             "WHERE t.table_name='sales'"
         ).fetchone()[0]
         assert status == "UNRESOLVED"
+
+
+@pytest.mark.parametrize("stale", [False, True])
+def test_batch_overlay_preserves_order_across_receipt_pages_and_raw_guard(stale):
+    with duckdb.connect() as db:
+        db.execute("CREATE SCHEMA meta")
+        db.execute(
+            "CREATE TABLE meta.text_integrity(locator VARCHAR PRIMARY KEY,record_id VARCHAR,"
+            "column_id VARCHAR,candidate_json JSON,status VARCHAR,proof_json JSON,before_json JSON)"
+        )
+        batch = [
+            RawRecord(f"r{i:04d}", "table", SourceRow(i + 1, ("raw Việt",)), "data")
+            for i in reversed(range(1000))
+        ]
+        db.executemany(
+            "INSERT INTO meta.text_integrity VALUES (?,?,?,?,?,?,?)",
+            [
+                (
+                    f"cell:r{i:04d}:c0001",
+                    f"r{i:04d}",
+                    "c0001",
+                    json.dumps({"value": f"repaired {i}"}),
+                    "ACCEPTED" if i % 7 else "UNRESOLVED",
+                    json.dumps({"kind": "cell", "receipt_sha256": f"{i:064x}"}),
+                    json.dumps({"type": "str", "value": "raw Việt"}),
+                )
+                for i in range(600)
+            ],
+        )
+        state = SimpleNamespace(
+            db=db,
+            text_profiles=(),
+            cells={r.record_id: {"c0001": r.source.values[0]} for r in batch},
+            origins={},
+            events=[],
+            extra_lineage=[],
+        )
+        if stale:
+            state.cells["r0599"]["c0001"] = "changed working value"
+            with pytest.raises(ValueError, match="no longer begins at raw evidence"):
+                apply_text_to_batch(state, batch)
+            assert not state.events
+            return
+        apply_text_to_batch(state, batch)
+        assert [event.record_id for event in state.events] == [
+            f"r{i:04d}" for i in reversed(range(600))
+        ]
+        assert len(state.extra_lineage) == 600
+        assert len(state.origins) == 600
+        for i in range(1000):
+            expected = f"repaired {i}" if i < 600 and i % 7 else "raw Việt"
+            assert state.cells[f"r{i:04d}"]["c0001"] == expected
+        assert all(record.source.values == ("raw Việt",) for record in batch)

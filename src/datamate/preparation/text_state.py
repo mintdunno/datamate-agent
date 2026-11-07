@@ -634,13 +634,18 @@ def apply_text_to_batch(state: OperationState, batch: Sequence[RawRecord]) -> No
             else ()
         )
 
+    # Page on the unique locator, not column_id shared by many records.
+    # Receipt memory remains bounded by the current raw batch.
+    receipts = {}
+    for _, record_id, *row in _rows(
+        state.db,
+        "SELECT locator,record_id,column_id,candidate_json,status,proof_json,before_json "
+        "FROM meta.text_integrity WHERE record_id=ANY(?::VARCHAR[]) ORDER BY locator",
+        [[record.record_id for record in batch]],
+    ):
+        receipts.setdefault(record_id, []).append(row)
     for record in batch:
-        for row in _rows(
-            state.db,
-            "SELECT column_id,candidate_json,status,proof_json,before_json "
-            "FROM meta.text_integrity WHERE record_id=? ORDER BY column_id",
-            [record.record_id],
-        ):
+        for row in sorted(receipts.get(record.record_id, ()), key=lambda item: item[0]):
             column, candidate, status, proof, before = row
             if json.loads(proof)["kind"] == "metadata":
                 continue
