@@ -470,8 +470,10 @@ cannot be aggregated. Source observations do not qualify official revenue or
 whole-business/time coverage. Raw values and source/projection lineage stay separate;
 persisted receipts and exact view definitions reject post-audit changes.
 
-Current evidence and the blocked sales-sheet canary are recorded in the
+Historical source-field evidence is recorded in the
 [source-field report](docs/engineering/qualified_source_fields_report.md).
+The [pre-header recovery report](docs/engineering/preheader_recovery_report.md)
+records the subsequent cold preparation, SQL checks and remaining live-solve gate.
 
 
 Unresolved pre-header records are marked as unresolved_preheader_metadata and

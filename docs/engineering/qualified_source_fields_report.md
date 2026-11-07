@@ -1,5 +1,7 @@
 # Qualified source fields — 2026-11-07
 
+Historical checkpoint: see the subsequent [pre-header recovery report](preheader_recovery_report.md) for the metadata integration and fresh preparation results.
+
 Status: **PARTIAL**. The original sales-sheet canary is **BLOCKED**; four
 supplemental source-record SQL probes pass. This does not complete Milestone 1.
 
