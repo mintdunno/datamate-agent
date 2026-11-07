@@ -9,9 +9,14 @@ raw records and provenance. Model/backend profiles select NIM or an OpenAI-compa
 local server without changing agent logic. Embeddings, rerankers and vector databases
 are outside Milestone 1. Unrestricted Python execution is not exposed.
 
-Implementation, synthetic verification and real model qualification are separate.
-See the [Milestone 1 evidence report](docs/engineering/milestone1_report.md) for actual
-runs and remaining acceptance gates; profiles alone do not establish model compatibility.
+Adaptive-normalization **Milestone 1 is CLOSED by user acceptance** of the small
+regression suite and real Gemma SQL-to-answer diagnostic. See the
+[closure decision](docs/decisions/0005-milestone1-closure.md) and
+[current evidence](docs/engineering/preheader_recovery_report.md) for the accepted
+scope and retained limitations. Implementation, synthetic verification and real
+qualification remain separate. The earlier broad-harness
+[evidence report](docs/engineering/milestone1_report.md) is historical; profiles
+alone do not establish model compatibility.
 
 ## Development
 
@@ -444,10 +449,12 @@ legacy baseline reproduction; this is an explicit preparation setting, not a mod
 or backend fallback.
 
 
-The current native-relation pilot has **Milestone 1 PARTIAL** status and a **FAIL**
-strict five-business quality gate. Full-source execution, cell-level improvements,
-SML evidence and remaining SQL/financial-contract gaps are recorded in the
-[qualification report](docs/engineering/native_relations_report.md).
+The historical native-relation campaign has a **FAIL** strict five-business
+quality gate, retained in its
+[qualification report](docs/engineering/native_relations_report.md). Subsequent
+bounded recovery and real SQL-to-answer checks passed. The user closed Milestone 1
+on that disclosed scope in the [closure decision](docs/decisions/0005-milestone1-closure.md);
+this does not relabel the historical quality gate as PASS.
 
 
 Financial mappings distinguish recorded `unit_price` from `unit_cost`, and line/order

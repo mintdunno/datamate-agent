@@ -3,13 +3,18 @@
 Date: 2026-11-07. Branch: `feat/source-mapping-recovery`.
 Scope: train `biz_122`, `DonHang_ChiTiet_1.xlsx / T01-2025`.
 
+**Milestone status: CLOSED by explicit user acceptance after the final small test.**
+The [closure decision](../decisions/0005-milestone1-closure.md) records the
+accepted scope and supersedes earlier requests for full qualification before
+project closure. Measured gate results and limitations below are unchanged.
+
 **Latest checkpoint: the complete selected vertical slice PASSED.** Real Gemma
 called SQL, received 5,516 verified source records and returned the typed numeric
 answer `5516`. Two additional calls respected the user's 30 RPM / 16,000 TPM
 constraints using serial requests spaced 61 seconds after response completion.
 Earlier HTTP failures and budget stops below are historical checkpoints.
-This is a source-observation diagnostic, not official QA accuracy or a complete
-Milestone 1 acceptance result. It follows the historical
+These measurements cover a source-observation diagnostic, not official QA accuracy
+or complete five-business qualification. They follow the historical
 [source-field report](qualified_source_fields_report.md).
 
 ## Implementation and checks

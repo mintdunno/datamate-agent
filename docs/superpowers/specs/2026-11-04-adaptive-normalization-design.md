@@ -1,5 +1,10 @@
 # New Milestone 1 — Evidence-Guided Adaptive Normalization
 
+Closure update (2026-11-07): the user accepted the disclosed small-test and real
+Gemma diagnostic scope and closed Milestone 1. See the
+[closure decision](../../decisions/0005-milestone1-closure.md). Original
+criteria below remain historical targets; unverified gates are not reported as passed.
+
 Status: APPROVED design (2026-11-04), revised for the approved simplification
 (revision 2, 2026-11-04) and the user's Polars-only decision (revision 3, 2026-11-05).
 This is the design and acceptance roadmap; its file-by-file implementation plan is
