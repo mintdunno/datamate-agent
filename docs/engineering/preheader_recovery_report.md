@@ -2,6 +2,11 @@
 
 Date: 2026-11-07. Branch: `feat/source-mapping-recovery`.
 Scope: train `biz_122`, `DonHang_ChiTiet_1.xlsx / T01-2025`.
+
+**Latest checkpoint after the user-requested retry:** Google returned HTTP 200;
+Gemma executed SQL successfully and retrieved the independently verified 5,516
+source records. The five-request run budget is exhausted; final model answer
+generation remains unverified. The earlier HTTP 500 is historical evidence.
 This is a source-observation diagnostic, not official QA accuracy or a complete
 Milestone 1 acceptance result. It follows the historical
 [source-field report](qualified_source_fields_report.md).
@@ -72,7 +77,7 @@ The selected result proves neither order counts nor official revenue/coverage.
   and prefetch changes. An earlier metadata review found a copied-receipt integrity
   defect; its independent raw-source comparison and regression were added.
 
-## Budget and external-call stop
+## Budget and external-call stop before the explicit retry
 
 The same persistent run ledger records **four actual Google HTTP attempts** out
 of five, at 1 RPM and concurrency one. Known reported usage is **21,742 input and
@@ -121,3 +126,29 @@ qualification was performed in this diagnostic.
 - `c6047d9`: cumulative streaming usage accounting.
 - `7f2dc5b`: optional bounded source evidence prefetch.
 - `d6ce321`: trace qualified schemas without confusing metadata counts with result rows.
+
+## User-requested single-request retry
+
+The user explicitly requested another test after the HTTP 500. Exactly one
+remaining request was sent with the same model, profile, question, source context,
+streaming mode and ledger; no automatic retries or fallback were enabled.
+
+- HTTP **200**, stream completed, finish reason `stop`, **12.19 seconds**.
+- Gemma selected `execute_sql` and issued a source-table `SELECT count(*)`.
+- Restricted SQL returned **5,516**, non-truncated and matching raw-source evidence.
+- SDK and central ledger agree: **6,757 input / 82 output tokens** for this request;
+  the cumulative accounting fix therefore also has real-stream evidence.
+- Source files, implementation, model profile and prepared manifest stayed unchanged.
+- Run accounting is **5/5 attempts**, zero remaining. Known reported cumulative
+  usage is **28,499 input / 204 output tokens**; earlier incomplete/missing usage
+  still prevents a complete billing assertion.
+
+The agent hit its explicit one-request limit after executing SQL, so its stored
+final output is abstention with `UsageLimitExceeded`. This is a request-budget
+stop, not another HTTP 500 or a token-counting failure. A subsequent model exchange
+is still needed for the final typed answer. The transport/model-tool/SQL checks
+passed for this diagnostic; the complete answer path is not yet verified.
+
+Ignored evidence: `state/runs/preheader-live-biz122-v2/http500-retry/` contains
+`result.json`, `solve_actual.json`, request-budget snapshots and integrity checks.
+No tracked source code changed and no full test suite was rerun for this retry.
