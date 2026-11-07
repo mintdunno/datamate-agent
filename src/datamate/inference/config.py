@@ -39,6 +39,7 @@ class ModelProfile(ContractModel):
     native_tools: bool = True
     streaming: bool = False
     supports_streaming: bool = False
+    stream_usage_mode: Literal["final", "cumulative"] = "final"
     force_output_tool: bool = False
     strict_tool_schema: bool = False
     connect_timeout_seconds: float = Field(default=15, gt=0, le=3600)

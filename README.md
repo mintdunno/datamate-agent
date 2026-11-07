@@ -343,6 +343,13 @@ are not retried. Neither authorization headers nor generated/source text is stor
 these timing traces. Slow first output does not identify provider queue vs model
 prefill/reasoning without additional provider metrics.
 
+Profiles set `stream_usage_mode` to `final` (default) or `cumulative` to match
+provider usage events. Cumulative mode uses the SDK replacement accounting so
+repeated totals do not consume the token budget repeatedly. The Google Gemma
+profile enables it; the transport removes the SDK vendor request extension
+`stream_options.continuous_usage_stats` while retaining supported stream options.
+The central request ledger still records each actual request once.
+
 Mapping proposals stream only when the selected profile explicitly enables it.
 The agent drains the response through usage/finish events before typed acceptance.
 Reports distinguish transport timeout phases, deadline, provider errors, local

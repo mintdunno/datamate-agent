@@ -20,6 +20,7 @@
   "native_tools": true,
   "streaming": true,
   "supports_streaming": true,
+  "stream_usage_mode": "cumulative",
   "force_output_tool": false,
   "strict_tool_schema": false,
   "connect_timeout_seconds": 15.0,

@@ -1,5 +1,6 @@
 """One OpenAI-compatible model factory; no backend or generation-mode fallback."""
 
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -32,6 +33,9 @@ def model_settings(profile: ModelProfile) -> dict:
             "top_p": profile.top_p,
             "extra_body": profile.extra_body,
             "max_retries": 0,
+            "openai_continuous_usage_stats": (
+                True if getattr(profile, "stream_usage_mode", "final") == "cumulative" else None
+            ),
         }.items()
         if value is not None
     }
@@ -43,6 +47,25 @@ class GuardedTransport(httpx.AsyncBaseTransport):
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         body = await request.aread()
+        if getattr(self.profile, "stream_usage_mode", "final") == "cumulative":
+            payload = json.loads(body)
+            options = payload.get("stream_options")
+            if isinstance(options, dict) and "continuous_usage_stats" in options:
+                # The SDK flag also requests a vendor extension. This backend already
+                # emits cumulative counters; use its supported wire protocol unchanged.
+                options.pop("continuous_usage_stats")
+                body = json.dumps(
+                    payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+                ).encode()
+                headers = request.headers.copy()
+                headers["content-length"] = str(len(body))
+                request = httpx.Request(
+                    request.method,
+                    request.url,
+                    headers=headers,
+                    content=body,
+                    extensions=request.extensions,
+                )
         # UTF-8 bytes are a conservative tokenizer-independent proxy, including tool schemas.
         # Retain 1K tokens for template/control overhead; never silently truncate evidence.
         limit = min(
