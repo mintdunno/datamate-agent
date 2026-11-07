@@ -149,7 +149,8 @@ async def solve_question(
                 output = function(*args, **kwargs)
                 if isinstance(output, dict):
                     event["error_code"] = output.get("error")
-                    event["returned_row_count"] = len(output.get("rows", []))
+                    rows = output.get("rows")
+                    event["returned_row_count"] = len(rows) if isinstance(rows, list) else 0
                     event["truncated"] = output.get("truncated", False)
                 return output
             except (ValueError, TimeoutError, EOFError) as error:

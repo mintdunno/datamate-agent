@@ -197,3 +197,67 @@ def test_independent_source_audit_rejects_coverage_and_lineage_gaps(source_world
             db.execute("DELETE FROM meta.lineage WHERE column_id='c0003'")
         findings = audit_source_fields(db, bindings, {})
         assert any(f.scope == scope and f.status in {"FAIL", "UNRESOLVED"} for f in findings)
+
+
+@pytest.mark.parametrize("prefetch", [False, True])
+def test_solver_traces_qualified_schema_without_treating_row_count_as_rows(source_world, prefetch):
+    import asyncio
+    import json
+
+    from pydantic_ai.messages import ModelResponse, ToolCallPart, UserPromptPart
+    from pydantic_ai.models.function import FunctionModel
+
+    from datamate.contracts.inputs import Question
+    from datamate.runtime.solver import solve_question
+
+    projection = source_projection(source_world)
+    table = "clean." + projection["scope"]
+    tools = StructuredTools(source_world.database, source_world.catalog)
+    assert tools.describe_table(table)["rows"] == 2
+    calls = []
+
+    def respond(messages, info):
+        calls.append(1)
+        if prefetch:
+            prompt = next(
+                part.content
+                for message in messages
+                for part in message.parts
+                if isinstance(part, UserPromptPart)
+            )
+            schema = json.loads(prompt)["source_context"]["tables"][0]
+            assert "rows" not in schema
+            assert "declared_data_rows" not in schema["policy"]
+        elif len(calls) <= 2:
+            scope = "split" if len(calls) == 1 else "business"
+            return ModelResponse(parts=[ToolCallPart("get_rules", {"scope": scope})])
+        elif len(calls) == 3:
+            return ModelResponse(parts=[ToolCallPart("describe_table", {"table_id": table})])
+        if len(calls) == (1 if prefetch else 4):
+            return ModelResponse(
+                parts=[ToolCallPart("execute_sql", {"sql": f"SELECT count(*) FROM {table}"})]
+            )
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, {"answer": 2})])
+
+    result = asyncio.run(
+        solve_question(
+            Question(
+                id="q",
+                business_id="shop",
+                question=f"Count rows in {table}?",
+                as_of_date="2025-01-01",
+            ),
+            tools,
+            FunctionModel(respond),
+            prefetch_source_context=prefetch,
+        )
+    )
+    assert result.error_code is None, result.error_code
+    assert result.answer["answer"] == 2
+    description = next(
+        event for event in result.tool_events if event["tool_name"] == "describe_table"
+    )
+    assert description["error_code"] is None
+    assert description["returned_row_count"] == 0
+    query = next(event for event in result.tool_events if event["tool_name"] == "execute_sql")
+    assert query["returned_row_count"] == 1
