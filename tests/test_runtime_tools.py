@@ -17,7 +17,13 @@ from datamate.runtime.tools import StructuredTools, validate_sql
         "SELECT * FROM range(1000000000)",
         "SELECT * FROM 'secret.csv'",
         "WITH raw_records AS (SELECT * FROM raw_records) SELECT * FROM raw_records",
+        (
+            "WITH RECURSIVE raw_records AS ("
+            "SELECT * FROM raw_records UNION ALL SELECT * FROM raw_records WHERE 1=0"
+            ") SELECT * FROM raw_records"
+        ),
         "WITH sales AS (SELECT * FROM raw_records) SELECT * FROM sales",
+        "SELECT #1 FROM sales",
         "SELECT * FROM (PIVOT raw_records ON x USING sum(y))",
         "SELECT * FROM (UNPIVOT raw_records ON x,y INTO NAME key VALUE val)",
         "SELECT * FROM (SUMMARIZE raw_records)",
@@ -98,6 +104,9 @@ def test_worker_deadline_and_oversized_column_metadata(tmp_path):
         "strftime(DATE '2026-02-01','%Y-%m')",
         "date_trunc('month',DATE '2026-02-03')",
         "date_diff('day',DATE '2026-02-01',DATE '2026-02-03')",
+        "1 WHERE 1 = 1 AND (2 = 2 OR 3 = 3)",
+        "1 WHERE EXISTS (SELECT 1)",
+        "regexp_matches('abc', 'a')",
     ],
 )
 def test_safe_date_functions_use_sqlglot_canonical_names(expression):

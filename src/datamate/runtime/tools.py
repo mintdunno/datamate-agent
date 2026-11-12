@@ -51,8 +51,13 @@ SAFE_FUNCTIONS = {
     "LEAST",
     "IF",
     "CASE",
+    "AND",
+    "OR",
+    "XOR",
+    "EXISTS",
     "REGEXP_REPLACE",
     "REGEXP_MATCHES",
+    "REGEXP_LIKE",
     "FLOOR",
     "CEIL",
     "CONCAT",
@@ -68,6 +73,34 @@ SAFE_FUNCTIONS = {
 
 def _table_id(table: exp.Table) -> str:
     return f"{table.db}.{table.name}" if table.db else table.name
+
+
+def _uses_business_data(sql: str, business_tables: set[str]) -> bool:
+    parsed = sqlglot.parse_one(sql, read="duckdb")
+    scopes = list(traverse_scope(parsed))
+    if not scopes:
+        return False
+    active = [scopes[-1]]
+    seen = {id(scopes[-1])}
+    tables: set[str] = set()
+    has_data_expr = False
+    while active:
+        scope = active.pop()
+        if any(
+            isinstance(node, (exp.Column, exp.Star, exp.Count)) for node in scope.expression.walk()
+        ):
+            has_data_expr = True
+        for _, source in scope.selected_sources.values():
+            if isinstance(source, exp.Table):
+                tables.add(_table_id(source))
+            elif hasattr(source, "expression") and id(source) not in seen:
+                seen.add(id(source))
+                active.append(source)
+        for subquery_scope in getattr(scope, "subquery_scopes", ()):
+            if id(subquery_scope) not in seen:
+                seen.add(id(subquery_scope))
+                active.append(subquery_scope)
+    return bool(tables & business_tables) and has_data_expr
 
 
 def validate_sql(sql: str, tables: set[str]) -> str:
@@ -107,6 +140,10 @@ def _validated_select(sql: str, tables: set[str]) -> str:
     for node in query.walk():
         if isinstance(node, (exp.DDL, exp.DML, exp.Into, exp.Command)):
             raise ValueError("non-query SQL denied")
+        if isinstance(node, exp.With) and node.args.get("recursive"):
+            raise ValueError("unsupported table scope")
+        if isinstance(node, exp.PositionalColumn):
+            raise ValueError("whole-row access outside qualified columns")
         if isinstance(node, exp.Func):
             name = node.name.upper() if isinstance(node, exp.Anonymous) else node.sql_name()
             if name not in SAFE_FUNCTIONS:
@@ -194,6 +231,7 @@ class StructuredTools:
         self.executions = []
         self.rules_read = set()
         self.rule_ids_read = set()
+        self.schema_inspected = False
 
     def _qualified_relations(self) -> dict[str, dict]:
         relations = {}
@@ -537,6 +575,7 @@ class StructuredTools:
 
     def list_tables(self) -> list[dict]:
         """List qualified SQL relation IDs, complete factual scopes, and provenance."""
+        self.schema_inspected = True
         if self._qualified:
             result = []
             for table in self._relations.values():
@@ -577,6 +616,7 @@ class StructuredTools:
 
     def describe_table(self, table_id: str) -> dict:
         """Get SQL column IDs, original headers, data types, and provenance for one table."""
+        self.schema_inspected = True
         if self._qualified:
             if table_id not in self._relations:
                 raise ValueError("unknown qualified table")
@@ -613,6 +653,17 @@ class StructuredTools:
         validate_sql(sql, self.tables)
         query = self._qualified_sql(sql) if self._qualified else sql
         validate_sql(query, self.tables)
+        return self._run_validated_query(sql, query, parameters, started=started)
+
+    def _run_validated_query(
+        self,
+        sql: str,
+        query: str,
+        parameters: list[FiniteJsonValue] | None = None,
+        *,
+        started: float | None = None,
+    ) -> dict:
+        started = time.monotonic() if started is None else started
         parameters = parameters or []
         if len(parameters) > 100 or len(json.dumps(parameters, allow_nan=False).encode()) > 12000:
             raise ValueError("SQL parameter budget exceeded")
@@ -629,11 +680,7 @@ class StructuredTools:
                 raise TimeoutError("SQL deadline exceeded")
             result = parent.recv()
             business_tables = self.tables - {"calendar_data", "clean.calendar_days"}
-            uses_data = any(
-                isinstance(source, exp.Table) and _table_id(source) in business_tables
-                for scope in traverse_scope(sqlglot.parse_one(sql, read="duckdb"))
-                for source in scope.sources.values()
-            )
+            uses_data = _uses_business_data(sql, business_tables)
             self.executions.append(
                 {
                     "sql": sql,
@@ -665,6 +712,7 @@ class StructuredTools:
 
     def search_schema(self, query: str) -> list[dict]:
         """Find relevant table/column labels by deterministic fuzzy matching; returns no rows."""
+        self.schema_inspected = True
         candidates = []
         tables = self._relations.values() if self._qualified else self.catalog["tables"]
         for table in tables:
@@ -696,12 +744,12 @@ class StructuredTools:
             raise ValueError("invalid search column, limit, or query length")
         column = column_id.replace('"', '""')
         table = self._quoted_table(table_id)
-        return self.execute_sql(
+        sql = (
             f'SELECT DISTINCT CAST("{column}" AS VARCHAR) AS value FROM {table} '
             f'WHERE "{column}" IS NOT NULL ORDER BY '
-            f"levenshtein(lower(value), lower(?)), value LIMIT {limit}",
-            [query],
+            f"levenshtein(lower(value), lower(?)), value LIMIT {limit}"
         )
+        return self._run_validated_query(sql, sql, [query])
 
     def _quoted_table(self, table_id: str) -> str:
         parts = table_id.split(".") if self._qualified else [table_id]
@@ -748,7 +796,7 @@ class StructuredTools:
                     return {
                         "error": "rule_section_exceeds_budget",
                         "rule_id": entry["rule_id"],
-                        "next_offset": next_offset,
+                        "next_offset": offset + 1 if offset + 1 < len(entries) else None,
                         "total": len(entries),
                     }
                 break

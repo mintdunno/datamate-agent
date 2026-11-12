@@ -203,7 +203,9 @@ async def solve_question(
             and "error" not in run["result"]
             and not run["result"].get("truncated")
         ]
-        if output.type != "abstain" and not evidence:
+        if output.type not in {"abstain", "unanswerable"} and not evidence:
+            raise ModelRetry("A successful non-truncated business data query is required.")
+        if output.type == "unanswerable" and not evidence and not tools.schema_inspected:
             raise ModelRetry("A successful non-truncated business data query is required.")
         if output.type != "abstain" and not _scalar_evidence(output, evidence):
             raise ModelRetry("The exact scalar answer must be present in business query results.")
@@ -236,13 +238,15 @@ async def solve_question(
 
     try:
         if prefetch_source_context:
+            tools.schema_inspected = True
             source_rules = {
                 scope: recoverable(tools.get_rules)(scope=scope, limit=10)
                 for scope in ("split", "business")
             }
             schemas = []
             for table_id in sorted(tools.tables):
-                if table_id not in question.question:
+                bare_name = table_id.split(".", 1)[-1]
+                if table_id not in question.question and bare_name not in question.question:
                     continue
                 description = recoverable(tools.describe_table)(table_id)
                 # Supply schema/context, never record counts as shortcut answer evidence.

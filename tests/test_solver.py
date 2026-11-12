@@ -139,7 +139,15 @@ def test_explicit_rule_reads_satisfy_source_gate_and_queries_are_traced(tmp_path
     assert sql_events[0]["timestamp"].tzinfo is not None
 
 
-@pytest.mark.parametrize("sql,value", [("SELECT 1", 999), ("SELECT sum(amount) FROM sales", 999)])
+@pytest.mark.parametrize(
+    "sql,value",
+    [
+        ("SELECT 1", 999),
+        ("SELECT sum(amount) FROM sales", 999),
+        ("SELECT 999 FROM sales", 999),
+        ("WITH unused AS (SELECT amount FROM sales) SELECT 999", 999),
+    ],
+)
 def test_ungrounded_scalar_is_abstained(tmp_path, sql, value):
     path = tmp_path / "data.duckdb"
     with duckdb.connect(str(path)) as db:
@@ -170,3 +178,54 @@ def test_ungrounded_scalar_is_abstained(tmp_path, sql, value):
     assert result.answer["type"] == "abstain"
     assert result.error_code
     assert len(calls) <= 4
+
+
+def test_unanswerable_succeeds_without_business_tables_after_reading_rules(tmp_path):
+    path = tmp_path / "empty.duckdb"
+    with duckdb.connect(str(path)) as db:
+        db.execute("CREATE SCHEMA clean")
+        db.execute("CREATE TABLE clean.calendar_days(date DATE,record_id VARCHAR)")
+        db.execute("INSERT INTO clean.calendar_days VALUES ('2025-01-01','cal-1')")
+    rules = [
+        {"rule_id": "r1", "source": "rulebook.md", "text": "Rules."},
+        {"rule_id": "r2", "source": "data/shop/README.md", "text": "No customer phone recorded."},
+    ]
+    tools = StructuredTools(
+        path,
+        {
+            "artifact_version": 2,
+            "projections": [],
+            "qualification": {},
+            "calendar": {
+                "status": "QUALIFIED",
+                "table_name": "calendar_days",
+                "columns": ["date", "record_id"],
+                "provenance_columns": ["record_id"],
+                "source_sha256": "a" * 64,
+                "calendar_sha256": "b" * 64,
+                "rows": 1,
+                "declarations": {},
+            },
+            "tables": [],
+            "rules": rules,
+        },
+    )
+    calls = []
+
+    def respond(messages, info):
+        calls.append(1)
+        if len(calls) == 1:
+            return ModelResponse(parts=[ToolCallPart("get_rules", {"scope": "split"})])
+        if len(calls) == 2:
+            return ModelResponse(parts=[ToolCallPart("get_rules", {"scope": "business"})])
+        if len(calls) == 3:
+            return ModelResponse(parts=[ToolCallPart("list_tables", {})])
+        unanswerable_tool = next(
+            tool.name for tool in info.output_tools if "unanswerable" in tool.name
+        )
+        return ModelResponse(parts=[ToolCallPart(unanswerable_tool, {"reason": "no_phone_column"})])
+
+    question = Question(id="q", business_id="shop", question="Phone?", as_of_date="2025-01-01")
+    result = asyncio.run(solve_question(question, tools, FunctionModel(respond)))
+    assert result.error_code is None
+    assert result.answer["type"] == "unanswerable"

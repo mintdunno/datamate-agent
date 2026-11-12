@@ -13,10 +13,23 @@ _SAFE_MESSAGES = frozenset(
         "non-query SQL denied",
         "query column metadata exceeds result budget",
         "unknown table",
+        "unknown qualified table",
         "SQL parameter budget exceeded",
         "invalid column or limit",
         "invalid search column, limit, or query length",
         "invalid rule page",
+        "invalid rule scope",
+        "whole-row access outside qualified columns",
+        "column outside qualified projection",
+        "source fields require a single-source SELECT; joins/casts/nesting denied",
+        "source arithmetic requires a separately audited measure",
+        "unsupported source aggregate",
+        "source aggregates require a directly qualified numeric field",
+        "text fields cannot become numeric source measures",
+        "source price, factor or percentage aggregation is unqualified",
+        "source quantity aggregate requires recorded-unit grouping/filter",
+        "days must be an integer in 1..3660",
+        "unsupported period; use explicit question dates",
     }
 )
 _RETRY_REASONS = {

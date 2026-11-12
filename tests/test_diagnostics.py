@@ -5,6 +5,17 @@ from datamate.runtime.diagnostics import failure_code, safe_tool_feedback
 
 def test_feedback_preserves_safe_messages_and_never_leaks_unknown():
     assert safe_tool_feedback(ValueError("invalid SQL")) == "invalid SQL"
+    assert (
+        safe_tool_feedback(
+            ValueError("source quantity aggregate requires recorded-unit grouping/filter")
+        )
+        == "source quantity aggregate requires recorded-unit grouping/filter"
+    )
+    assert (
+        safe_tool_feedback(ValueError("column outside qualified projection"))
+        == "column outside qualified projection"
+    )
+    assert safe_tool_feedback(ValueError("invalid rule scope")) == "invalid rule scope"
     assert safe_tool_feedback(ValueError("unsupported SQL function: STR_SPLIT")) == (
         "unsupported SQL function: STR_SPLIT"
     )

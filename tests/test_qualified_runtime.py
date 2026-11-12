@@ -124,6 +124,11 @@ def test_ready_flat_projection_is_discoverable(qualified):
         "SELECT * FROM order_lines",
         'SELECT * FROM "clean.order_lines"',
         "WITH private AS (SELECT * FROM private) SELECT * FROM private",
+        (
+            "WITH RECURSIVE private(secret) AS ("
+            "SELECT #1 FROM private UNION ALL SELECT secret FROM private WHERE 1=0"
+            ") SELECT secret FROM private"
+        ),
         "WITH order_lines AS (SELECT * FROM meta.bindings) SELECT * FROM order_lines",
         "SELECT * FROM duckdb_tables()",
         "SELECT * FROM read_csv('secret.csv')",
@@ -150,6 +155,8 @@ def test_star_cannot_expose_blocked_amount(qualified):
         assert result["rows"] == [["fact-1", "source-1", "order-1", 2]]
     for sql in (
         "SELECT blocked_amount FROM clean.order_lines",
+        "SELECT #5 FROM clean.order_lines",
+        "SELECT SUM(#5) FROM clean.order_lines",
         "SELECT SUM(blocked_amount) FROM clean.order_lines WHERE quantity>0",
         "WITH s AS (SELECT * FROM clean.order_lines) SELECT blocked_amount FROM s",
     ):

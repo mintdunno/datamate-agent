@@ -104,6 +104,10 @@ def test_explicit_single_recorded_unit_filter_is_accepted(source_world):
     tools = StructuredTools(source_world.database, source_world.catalog)
     name = "clean." + projection["table_name"]
     assert tools.execute_sql(f"SELECT sum(c0003) FROM {name} WHERE c0004='viên'")["rows"] == [["2"]]
+    assert tools.execute_sql(f"SELECT sum(c0003) FROM {name} WHERE c0004='viên' AND c0002='Alpha'")[
+        "rows"
+    ] == [["2"]]
+    assert tools.search_data(name, "c0002", "Alpha", limit=1)["rows"] == [["Alpha"]]
 
 
 @pytest.mark.parametrize("change", ["candidate", "policy", "profile", "view"])
